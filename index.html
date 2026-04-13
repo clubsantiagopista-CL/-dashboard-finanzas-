@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal de Transparencia - Club Ciclista Santiago Pista</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --brand-navy: #2D3561;
+            --brand-orange: #E8572A;
+            --brand-blue: #3B82F6;
+            --paid-green: #10B981;
+            --unpaid-red: #EF4444;
+            --bg: #F1F5F9;
+        }
+        body { background: var(--bg); font-family: 'DM Sans', system-ui, sans-serif; margin: 0; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        
+        .scroll-x { overflow-x: auto; }
+        .scroll-y { overflow-y: auto; }
+        .scroll-x::-webkit-scrollbar, .scroll-y::-webkit-scrollbar { width: 5px; height: 5px; }
+        .scroll-x::-webkit-scrollbar-track, .scroll-y::-webkit-scrollbar-track { background: transparent; }
+        .scroll-x::-webkit-scrollbar-thumb, .scroll-y::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-in { animation: fadeIn 0.35s ease-out forwards; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .spinner { animation: spin 0.8s linear infinite; }
+
+        /* Heat map cell */
+        .hm-paid { background: #D1FAE5; color: #065F46; }
+        .hm-unpaid { background: #FEE2E2; color: #991B1B; }
+        .hm-na { background: #EFF6FF; color: #93C5FD; }
+        .hm-future { background: #F8FAFC; color: #E2E8F0; }
+
+        /* Bar chart */
+        .bar-ingreso { background: var(--brand-blue); }
+        .bar-egreso { background: var(--brand-orange); }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useEffect, useRef } = React;
+
+        // ==========================================
+        // CONFIG
+        // ==========================================
+        const DATA_SOURCES = {
+            socios: { label: 'Socios', url: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTti5wNytfqEQj9SKhGO-01aG9MsAfQhnk1UQjxLBZTGd_UoHW4-mEnBvCtbjUfTvGtXfr-NNhgHvRd/pub?gid=113097392&single=true&output=csv' },
+            txs2026: { label: '2026', url: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTti5wNytfqEQj9SKhGO-01aG9MsAfQhnk1UQjxLBZTGd_UoHW4-mEnBvCtbjUfTvGtXfr-NNhgHvRd/pub?gid=530518501&single=true&output=csv' },
+            txs2025: { label: '2025', url: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTti5wNytfqEQj9SKhGO-01aG9MsAfQhnk1UQjxLBZTGd_UoHW4-mEnBvCtbjUfTvGtXfr-NNhgHvRd/pub?gid=627364486&single=true&output=csv' },
+            novedades: { label: 'Novedades', url: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTti5wNytfqEQj9SKhGO-01aG9MsAfQhnk1UQjxLBZTGd_UoHW4-mEnBvCtbjUfTvGtXfr-NNhgHvRd/pub?gid=297967474&single=true&output=csv' },
+        };
+        const CUOTA = 17500;
+        const MESES_SHORT = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+        const MESES = [{id:'01',n:'Enero'},{id:'02',n:'Febrero'},{id:'03',n:'Marzo'},{id:'04',n:'Abril'},{id:'05',n:'Mayo'},{id:'06',n:'Junio'},{id:'07',n:'Julio'},{id:'08',n:'Agosto'},{id:'09',n:'Septiembre'},{id:'10',n:'Octubre'},{id:'11',n:'Noviembre'},{id:'12',n:'Diciembre'}];
+
+        // ==========================================
+        // UTILS
+        // ==========================================
+        const fmt = (v) => { if(!v||v===0) return '$0'; return new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',minimumFractionDigits:0,maximumFractionDigits:0}).format(v); };
+        const nk = (k) => { if(!k) return ''; return k.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[()\/\\°#¿?¡!]/g,'').replace(/\s+/g,'_').toLowerCase().trim(); };
+        const gv = (r, ks) => { for(const k of ks){ if(r[k]!==undefined&&r[k]!==null&&r[k].toString().trim()!=='') return r[k].toString().trim(); } return ''; };
+        const nr = (raw) => { const o={}; for(const k in raw) o[nk(k)]=(raw[k]||'').toString().trim(); return o; };
+        const cn = (v) => { if(!v||v==='') return 0; if(typeof v==='number') return Math.abs(v); const s=v.toString().trim(); if(s===''||s==='-'||s==='$') return 0; const n=Number(s.split(',')[0].replace(/[^0-9-]/g,'')); return isNaN(n)?0:Math.abs(n); };
+        const pd = (s) => { if(!s) return {y:'',m:'',d:'',sk:''}; const str=s.toString().trim(); let y='',m='',d=''; if(str.includes('/')){const p=str.split('/');if(p.length>=3){if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}else if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}}}else if(str.includes('-')){const p=str.split('-');if(p.length>=3){if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}else if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}}} return {y,m,d,sk:`${y}-${m}-${d}`}; };
+        const classCat = (c) => { const u=(c||'').toUpperCase(); if(u.includes('CUOTA')||u.includes('APORTE')||u.includes('MENSUALIDAD')) return 'CUOTA'; if(u.includes('ARRIENDO')||u.includes('VELO')||u.includes('PISTA')) return 'ARRIENDO'; if(u.includes('DONACION')||u.includes('DONACIÓN')) return 'DONACION'; return 'OTROS'; };
+
+        // CSV LOADER WITH CORS FALLBACK
+        const PROXIES = [(u)=>`https://corsproxy.io/?${encodeURIComponent(u)}`,(u)=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`];
+        const parseTxt = (t) => new Promise((res,rej)=>{Papa.parse(t,{header:true,skipEmptyLines:'greedy',transformHeader:h=>h.trim(),complete:r=>res({data:r.data,headers:r.meta?.fields||[]}),error:e=>rej(e)});});
+        const loadCSV = async (url) => {
+            try { const r=await new Promise((res,rej)=>{Papa.parse(url,{download:true,header:true,skipEmptyLines:'greedy',transformHeader:h=>h.trim(),complete:r=>res({data:r.data,headers:r.meta?.fields||[]}),error:e=>rej(e)});}); if(r.data.length>0) return r; } catch(e){ console.warn('[Direct fail]',e); }
+            for(let i=0;i<PROXIES.length;i++){ try{ const resp=await fetch(PROXIES[i](url)); if(!resp.ok) throw new Error(`HTTP ${resp.status}`); return await parseTxt(await resp.text()); }catch(e){ console.warn(`[Proxy ${i+1} fail]`,e); }}
+            throw new Error('CSV load failed');
+        };
+
+        // CARTOLA PARSER
+        const parseCartola = (data, anio, fmt) => data.map(raw => {
+            const r=nr(raw), fecha=gv(r,['fecha','date']), desc=gv(r,['descripcion','detalle','glosa']), cat=gv(r,['categoria','clasificacion','cat']);
+            let cs,as,ss;
+            if(fmt==='2026'){cs=gv(r,['cheques__cargos','cheques_cargos','cargos','cargo','cheques']);as=gv(r,['depositos__abonos','depositos_abonos','abonos','abono','depositos']);ss=gv(r,['saldo']);}
+            else{cs=gv(r,['cargos_clp','cargos','cargo']);as=gv(r,['abonos_clp','abonos','abono']);ss=gv(r,['saldo_clp','saldo']);}
+            const c=cn(cs),a=cn(as); let tipo='',monto=0;
+            if(a>0){tipo='INGRESO';monto=a;}else if(c>0){tipo='EGRESO';monto=c;}else return null;
+            const di=pd(fecha);
+            return {fecha,desc,tipo,monto,subtipo:tipo==='INGRESO'?classCat(cat):'EGRESO',cat:cat||'Sin Categoría',y:di.y||anio,m:di.m,d:di.d,sk:di.sk};
+        }).filter(Boolean);
+
+        // ICON
+        const Ic = ({name,className}) => { const ref=useRef(null); useEffect(()=>{ if(ref.current){ref.current.innerHTML=`<i data-lucide="${name}" class="${className||''}"></i>`; if(window.lucide) lucide.createIcons({root:ref.current});} },[name,className]); return <span ref={ref} style={{display:'inline-flex',alignItems:'center'}} />; };
+
+        // ==========================================
+        // APP
+        // ==========================================
+        const App = () => {
+            const [socios, setSocios] = useState([]);
+            const [txs, setTxs] = useState([]);
+            const [novedades, setNovedades] = useState([]);
+            const [ls, setLs] = useState({socios:null,txs2026:null,txs2025:null,novedades:null});
+            const [dbg, setDbg] = useState({});
+            const [showDbg, setShowDbg] = useState(false);
+
+            const now = new Date();
+            const [yf, setYf] = useState(now.getFullYear().toString());
+            const [mf, setMf] = useState('TODOS');
+            const [sf, setSf] = useState('TODOS');
+            const [search, setSearch] = useState('');
+            const [tab, setTab] = useState('heatmap'); // heatmap | desembolsos
+
+            const loading = Object.values(ls).some(v=>v===null);
+            const errs = Object.values(ls).filter(v=>v&&v!=='ok').length;
+
+            // LOAD
+            useEffect(() => {
+                (async () => {
+                    try { const {data,headers}=await loadCSV(DATA_SOURCES.socios.url); setDbg(p=>({...p,socios:{headers,rows:data.length,s:data[0]}}));
+                        setSocios(data.map((raw,i)=>{const r=nr(raw);const n=gv(r,['nombre_completo','nombre','socio']);const rut=gv(r,['rut']);const est=(gv(r,['estado_en_el_club','estado','status'])||'ACTIVO').toUpperCase();const ts=gv(r,['tipo_socio','tipo']);const fi=gv(r,['fecha_de_ingreso','fecha_ingreso','fechaingreso','ingreso']);let cuota=CUOTA;if(ts.toUpperCase().includes('BECA'))cuota=0;
+                        // Parsear fecha de ingreso → {y, m}
+                        const fiParsed = pd(fi);
+                        const ingresoY = fiParsed.y ? parseInt(fiParsed.y) : 2025; // fallback: asume activo desde 2025
+                        const ingresoM = fiParsed.m ? parseInt(fiParsed.m) : 1;
+                        return{id:i+1,rut,nombre:n||`Socio ${i+1}`,estado:est,tipoSocio:ts,cuota,fechaIngreso:fi,ingresoY,ingresoM};}).filter(s=>s.nombre&&!s.nombre.startsWith('Socio ')));
+                        setLs(p=>({...p,socios:'ok'})); } catch(e){ setLs(p=>({...p,socios:`Error: ${e}`})); setDbg(p=>({...p,socios:{error:String(e)}})); }
+
+                    try { const {data,headers}=await loadCSV(DATA_SOURCES.txs2026.url); setDbg(p=>({...p,txs2026:{headers,rows:data.length,s:data[0]}}));
+                        setTxs(p=>[...p,...parseCartola(data,'2026','2026')]); setLs(p=>({...p,txs2026:'ok'})); } catch(e){ setLs(p=>({...p,txs2026:`Error: ${e}`})); }
+
+                    try { const {data,headers}=await loadCSV(DATA_SOURCES.txs2025.url); setDbg(p=>({...p,txs2025:{headers,rows:data.length,s:data[0]}}));
+                        setTxs(p=>[...p,...parseCartola(data,'2025','2025')]); setLs(p=>({...p,txs2025:'ok'})); } catch(e){ setLs(p=>({...p,txs2025:`Error: ${e}`})); }
+
+                    try { const {data}=await loadCSV(DATA_SOURCES.novedades.url);
+                        setNovedades(data.map(raw=>{const r=nr(raw);return{rut:gv(r,['rut']),nombre:gv(r,['nombre_completo','nombre']),tipo:gv(r,['tipo_de_novedad','tipo_novedad']),fi:gv(r,['fecha_inicio']),ft:gv(r,['fecha_termino','fecha_fin'])};}));
+                        setLs(p=>({...p,novedades:'ok'})); } catch(e){ setLs(p=>({...p,novedades:`Error: ${e}`})); }
+                })();
+            }, []);
+
+            // ==========================================
+            // CALCULATIONS
+            // ==========================================
+            const txFilt = useMemo(()=>txs.filter(t=>{const my=t.y===yf;const mm=mf==='TODOS'?true:t.m===mf;return my&&mm;}),[txs,yf,mf]);
+            const kI = useMemo(()=>txFilt.filter(t=>t.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0),[txFilt]);
+            const kE = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0),[txFilt]);
+            const kS = kI-kE;
+            const kC = useMemo(()=>txFilt.filter(t=>t.tipo==='INGRESO'&&t.subtipo==='CUOTA').reduce((a,b)=>a+b.monto,0),[txFilt]);
+
+            // ALL cuota txs across ALL years (for FIFO accumulation)
+            const txCuotaAll = useMemo(()=>txs.filter(t=>t.tipo==='INGRESO'&&t.subtipo==='CUOTA'),[txs]);
+
+            // Current absolute month (for "future" detection)
+            const curMonthNum = yf === now.getFullYear().toString() ? now.getMonth()+1 : 12;
+            const curAbsMonth = now.getFullYear()*12 + (now.getMonth()+1); // e.g. 2026*12+4 = 24316
+
+            // ==========================================
+            // FIFO HEAT MAP: Exigibilidad + Acumulado Histórico
+            // ==========================================
+            // Equivalente DAX:
+            //   Total_Exigible_Acumulado = COUNTROWS(Calendario_Cuotas_Esperadas) * Cuota
+            //   Total_Pagado_Acumulado = SUM(Pagos[Monto]) con FIFO
+            //   Estado_Mes = IF(Pagado_Acum >= Exigible_Acum, "Pagado", IF(No_Aplica, "N/A", "Impago"))
+            // ==========================================
+            const heatData = useMemo(() => {
+                const viewYear = parseInt(yf);
+
+                return socios
+                    .filter(s => {
+                        const mn = s.nombre.toLowerCase().includes(search.toLowerCase());
+                        const ms = sf==='TODOS' ? true : sf==='ACTIVO' ? (s.estado==='ACTIVO'||s.estado.includes('BECA')) : s.estado===sf;
+                        return mn && ms;
+                    })
+                    .map(s => {
+                        const isActive = s.estado==='ACTIVO';
+                        const isBeca = s.estado.includes('BECA')||(s.tipoSocio||'').toUpperCase().includes('BECA');
+
+                        // 1. FECHA DE INGRESO → Primer mes exigible (absolute month)
+                        const ingresoAbs = s.ingresoY * 12 + s.ingresoM; // ej: 2025*12+12 = 24312
+
+                        // 2. TOTAL PAGADO ACUMULADO HISTÓRICO (FIFO: all payments ever)
+                        const pagosHistoricos = txCuotaAll.filter(tx => {
+                            const desc = (tx.desc||'').toUpperCase();
+                            const parts = s.nombre.toUpperCase().split(' ').filter(p=>p.length>2);
+                            return parts.filter(p=>desc.includes(p)).length >= 2;
+                        });
+                        const totalPagadoHistorico = pagosHistoricos.reduce((a,t)=>a+t.monto, 0);
+
+                        // 3. GENERAR CALENDARIO DE CUOTAS ESPERADAS (desde ingreso hasta mes actual)
+                        //    Equivalente a Dim_Calendario_Cuotas en Power Query
+                        //    Cada mes desde fecha_ingreso hasta hoy genera 1 cuota exigible de $17.500
+                        
+                        // 4. FIFO: Para cada mes del año seleccionado, calcular:
+                        //    - Total exigible acumulado HASTA ese mes (inclusive)
+                        //    - Comparar con total pagado acumulado
+                        //    - Si pagado >= exigible → PAGADO, sino → IMPAGO
+                        
+                        const months = [];
+                        let impagos = 0;
+
+                        for (let i = 1; i <= 12; i++) {
+                            const mid = i.toString().padStart(2, '0');
+                            const mesAbs = viewYear * 12 + i; // Absolute month for this cell
+                            const isFuture = mesAbs > curAbsMonth;
+
+                            // REGLA 1: No Aplica si el mes es ANTES de la fecha de ingreso
+                            if (mesAbs < ingresoAbs) {
+                                months.push({ m: mid, status: 'na', label: 'N/A' });
+                                continue;
+                            }
+
+                            // Socios no activos / no becados
+                            if (!isActive && !isBeca) {
+                                months.push({ m: mid, status: 'na', label: '-' });
+                                continue;
+                            }
+
+                            // Becados: siempre al día
+                            if (isBeca) {
+                                months.push({ m: mid, status: isFuture ? 'future' : 'paid', label: isFuture ? '·' : '✓' });
+                                continue;
+                            }
+
+                            // Mes futuro
+                            if (isFuture) {
+                                months.push({ m: mid, status: 'future', label: '·' });
+                                continue;
+                            }
+
+                            // REGLA 2: FIFO — Calcular cuotas exigibles acumuladas hasta este mes
+                            // = Cantidad de meses desde ingreso hasta este mes (inclusive)
+                            const mesesExigibles = mesAbs - ingresoAbs + 1;
+                            const totalExigible = mesesExigibles * s.cuota;
+
+                            // FIFO: Si el total pagado histórico cubre el total exigible → PAGADO
+                            const paid = totalPagadoHistorico >= totalExigible;
+
+                            months.push({
+                                m: mid,
+                                status: paid ? 'paid' : 'unpaid',
+                                label: paid ? '✓' : '✗',
+                                exigible: totalExigible,
+                                pagado: totalPagadoHistorico,
+                            });
+
+                            if (!paid) impagos++;
+                        }
+
+                        // Total de meses exigibles históricos (desde ingreso hasta hoy)
+                        const mesesExigiblesTotal = Math.max(0, curAbsMonth - ingresoAbs + 1);
+                        const cuotasExigidasTotal = isBeca ? 0 : mesesExigiblesTotal * s.cuota;
+                        const deudaTotal = Math.max(0, cuotasExigidasTotal - totalPagadoHistorico);
+
+                        return {
+                            ...s, months, impagos,
+                            totalPagado: totalPagadoHistorico,
+                            cuotasPagadas: s.cuota > 0 ? Math.floor(totalPagadoHistorico / s.cuota) : 0,
+                            mesesExigibles: mesesExigiblesTotal,
+                            deudaTotal,
+                            isActive, isBeca,
+                        };
+                    })
+                    .sort((a, b) => {
+                        // Primero por deuda total histórica (mayor primero)
+                        if (b.deudaTotal !== a.deudaTotal) return b.deudaTotal - a.deudaTotal;
+                        // Luego por impagos del año visible
+                        if (b.impagos !== a.impagos) return b.impagos - a.impagos;
+                        return a.nombre.localeCompare(b.nombre);
+                    });
+            }, [socios, txCuotaAll, yf, search, sf, curAbsMonth]);
+
+            // MONTHLY CHART DATA: Ingresos vs Egresos per month
+            const chartData = useMemo(() => {
+                return MESES_SHORT.map((label, i) => {
+                    const mid = (i+1).toString().padStart(2,'0');
+                    const monthTxs = txs.filter(t => t.y===yf && t.m===mid);
+                    const ing = monthTxs.filter(t=>t.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0);
+                    const eg = monthTxs.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0);
+                    return { label, ing, eg, mid };
+                });
+            }, [txs, yf]);
+
+            const maxChart = useMemo(() => Math.max(...chartData.map(d=>Math.max(d.ing,d.eg)),1), [chartData]);
+
+            // EGRESOS LIST
+            const egresos = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').sort((a,b)=>(b.sk||'').localeCompare(a.sk||'')),[txFilt]);
+            const egresosCat = useMemo(()=>{const m={};egresos.forEach(t=>{const c=t.cat;if(!m[c])m[c]={cat:c,total:0,n:0};m[c].total+=t.monto;m[c].n++;});return Object.values(m).sort((a,b)=>b.total-a.total);},[egresos]);
+
+            const years = useMemo(()=>{const s=new Set(['2025','2026']);txs.forEach(t=>{if(t.y)s.add(t.y);});return Array.from(s).sort().reverse();},[txs]);
+
+            // ==========================================
+            // LOADING
+            // ==========================================
+            if (loading) {
+                return (
+                    <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50">
+                        <div className="w-12 h-12 border-4 border-slate-200 rounded-full spinner" style={{borderTopColor:'var(--brand-navy)'}}></div>
+                        <p className="mt-4 text-slate-600 font-medium text-sm">Conectando con Google Sheets...</p>
+                        <div className="mt-3 flex flex-col gap-1 text-xs">
+                            {Object.entries(ls).map(([k,v])=>(
+                                <span key={k} className={v==='ok'?'text-emerald-600':v===null?'text-slate-400':'text-rose-500'}>
+                                    {DATA_SOURCES[k]?.label||k} {v==='ok'?'✓':v===null?'...':'✗'}
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                );
+            }
+
+            // ==========================================
+            // RENDER
+            // ==========================================
+            return (
+                <div className="min-h-screen">
+                    {/* HEADER BAR */}
+                    <div className="sticky top-0 z-40 border-b" style={{background:'var(--brand-navy)'}}>
+                        <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3">
+                            {/* Logo + Title */}
+                            <div className="flex items-center gap-3">
+                                <div className="w-9 h-9 rounded-lg flex items-center justify-center font-black text-white text-lg" style={{background:'var(--brand-orange)'}}>SP</div>
+                                <div>
+                                    <h1 className="text-white font-extrabold text-base sm:text-lg tracking-tight leading-tight">Portal de Transparencia</h1>
+                                    <p className="text-slate-400 text-[10px] font-medium tracking-wider uppercase">Club Ciclista Santiago Pista</p>
+                                </div>
+                            </div>
+
+                            {/* FILTERS INLINE */}
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <select className="bg-white/10 text-white text-xs font-bold px-3 py-1.5 rounded-lg border border-white/20 outline-none cursor-pointer" value={yf} onChange={e=>setYf(e.target.value)}>
+                                    {years.map(y=><option key={y} value={y} className="text-slate-900">{y}</option>)}
+                                </select>
+                                <select className="bg-white/10 text-white text-xs font-bold px-3 py-1.5 rounded-lg border border-white/20 outline-none cursor-pointer" value={mf} onChange={e=>setMf(e.target.value)}>
+                                    <option value="TODOS" className="text-slate-900">Año Completo</option>
+                                    {MESES.map(m=><option key={m.id} value={m.id} className="text-slate-900">{m.n}</option>)}
+                                </select>
+                                <input type="text" placeholder="Buscar socio..." className="bg-white/10 text-white placeholder-slate-400 text-xs px-3 py-1.5 rounded-lg border border-white/20 outline-none w-36 sm:w-44 focus:bg-white/20" value={search} onChange={e=>setSearch(e.target.value)} />
+                                <select className="bg-white/10 text-white text-xs font-bold px-3 py-1.5 rounded-lg border border-white/20 outline-none cursor-pointer" value={sf} onChange={e=>setSf(e.target.value)}>
+                                    <option value="TODOS" className="text-slate-900">Todos</option>
+                                    <option value="ACTIVO" className="text-slate-900">Activos</option>
+                                    <option value="SUSPENDIDO" className="text-slate-900">Suspendidos</option>
+                                    <option value="RETIRADO" className="text-slate-900">Retirados</option>
+                                </select>
+                                <div className="flex items-center gap-1.5 ml-2">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                    <span className="text-[10px] text-slate-400 font-medium">{socios.length} socios · {txs.length} mov.</span>
+                                </div>
+                                {errs>0 && <button onClick={()=>setShowDbg(!showDbg)} className="bg-amber-500/20 text-amber-300 text-[10px] px-2 py-1 rounded font-bold cursor-pointer">⚠ {errs} err</button>}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="max-w-[1600px] mx-auto px-4 sm:px-6 py-5">
+
+                        {/* DEBUG */}
+                        {showDbg && (
+                            <div className="bg-slate-900 text-slate-300 p-4 rounded-xl mb-5 font-mono text-[11px] overflow-x-auto">
+                                <div className="flex justify-between items-center mb-3">
+                                    <span className="text-emerald-400 font-bold text-xs">Debug Panel</span>
+                                    <button onClick={()=>setShowDbg(false)} className="text-slate-500 hover:text-white cursor-pointer text-xs">Cerrar</button>
+                                </div>
+                                {Object.entries(dbg).map(([k,info])=>(
+                                    <div key={k} className="mb-3">
+                                        <span className="text-sky-400 font-bold">{DATA_SOURCES[k]?.label||k}:</span>
+                                        {info.error ? <span className="text-rose-400 ml-2">{info.error}</span> : <span className="text-slate-500 ml-2">{info.rows} filas | Headers: [{info.headers?.join(', ')}]</span>}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+
+                        {/* KPIs */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+                            {[
+                                {l:'Total Ingresos',v:kI,c:'text-emerald-600',bg:'bg-white'},
+                                {l:'Total Desembolsos',v:kE,c:'text-rose-600',bg:'bg-white'},
+                                {l:'Saldo del Periodo',v:kS,c:kS>=0?'text-indigo-700':'text-rose-700',bg:kS>=0?'bg-indigo-50':'bg-rose-50'},
+                                {l:'Recaudación Cuotas',v:kC,c:'text-sky-600',bg:'bg-white',sub:kI>0?`${Math.round(kC/kI*100)}% del ingreso`:''},
+                            ].map((k,i)=>(
+                                <div key={i} className={`${k.bg} p-4 rounded-xl shadow-sm border border-slate-200 fade-in`}>
+                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">{k.l}</p>
+                                    <h2 className={`text-xl sm:text-2xl font-extrabold ${k.c}`}>{fmt(k.v)}</h2>
+                                    {k.sub && <p className="text-[10px] text-slate-400 mt-0.5">{k.sub}</p>}
+                                </div>
+                            ))}
+                        </div>
+
+                        {/* INGRESOS VS EGRESOS BAR CHART */}
+                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-5 fade-in">
+                            <div className="flex items-center justify-between mb-4">
+                                <div>
+                                    <h2 className="font-bold text-slate-800 text-sm">Ingresos vs Egresos — {yf}</h2>
+                                    <p className="text-[10px] text-slate-400 mt-0.5">Flujo de caja mensual comparado</p>
+                                </div>
+                                <div className="flex items-center gap-4 text-[10px] font-bold">
+                                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bar-ingreso inline-block"></span> Ingresos</span>
+                                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bar-egreso inline-block"></span> Egresos</span>
+                                </div>
+                            </div>
+                            <div className="flex items-end gap-1 sm:gap-2" style={{height:'180px'}}>
+                                {chartData.map((d,i) => {
+                                    const hI = maxChart > 0 ? (d.ing/maxChart)*160 : 0;
+                                    const hE = maxChart > 0 ? (d.eg/maxChart)*160 : 0;
+                                    const isFuture = (i+1) > curMonthNum && yf === now.getFullYear().toString();
+                                    return (
+                                        <div key={i} className="flex-1 flex flex-col items-center" style={{opacity: isFuture ? 0.3 : 1}}>
+                                            <div className="flex items-end gap-0.5 w-full justify-center" style={{height:'160px'}}>
+                                                <div className="bar-ingreso rounded-t-sm transition-all duration-300 relative group" style={{width:'40%',height:`${Math.max(hI,2)}px`}} title={`Ingresos: ${fmt(d.ing)}`}>
+                                                    {d.ing > 0 && <div className="hidden group-hover:block absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap z-10">{fmt(d.ing)}</div>}
+                                                </div>
+                                                <div className="bar-egreso rounded-t-sm transition-all duration-300 relative group" style={{width:'40%',height:`${Math.max(hE,2)}px`}} title={`Egresos: ${fmt(d.eg)}`}>
+                                                    {d.eg > 0 && <div className="hidden group-hover:block absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap z-10">{fmt(d.eg)}</div>}
+                                                </div>
+                                            </div>
+                                            <span className="text-[10px] text-slate-500 font-bold mt-1.5">{d.label}</span>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        {/* TAB SWITCHER */}
+                        <div className="flex items-center gap-1 mb-3">
+                            <button onClick={()=>setTab('heatmap')} className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${tab==='heatmap'?'bg-white shadow-sm text-slate-800 border border-slate-200':'text-slate-500 hover:text-slate-700'}`}>
+                                <Ic name="grid-3x3" className="w-3.5 h-3.5 inline mr-1" /> Mapa de Cuotas
+                            </button>
+                            <button onClick={()=>setTab('desembolsos')} className={`px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${tab==='desembolsos'?'bg-white shadow-sm text-slate-800 border border-slate-200':'text-slate-500 hover:text-slate-700'}`}>
+                                <Ic name="arrow-down-right" className="w-3.5 h-3.5 inline mr-1" /> Desembolsos
+                            </button>
+                        </div>
+
+                        {/* HEAT MAP MATRIX */}
+                        {tab === 'heatmap' && (
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 fade-in">
+                                <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                                    <div>
+                                        <h2 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                                            <Ic name="grid-3x3" className="w-4 h-4 text-emerald-600" />
+                                            Estado de Cuotas por Socio — {yf}
+                                        </h2>
+                                        <p className="text-[10px] text-slate-500 mt-0.5">
+                                            <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1 align-middle" style={{background:'#D1FAE5'}}></span>Pagado
+                                            <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1 ml-3 align-middle" style={{background:'#FEE2E2'}}></span>Impago
+                                            <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1 ml-3 align-middle" style={{background:'#EFF6FF',border:'1px solid #BFDBFE'}}></span>N/A (pre-ingreso)
+                                            <span className="inline-block w-2.5 h-2.5 rounded-sm mr-1 ml-3 align-middle" style={{background:'#F8FAFC',border:'1px solid #E2E8F0'}}></span>Futuro
+                                            <span className="ml-4 font-bold text-slate-600">Cuota: {fmt(CUOTA)}/mes · Lógica FIFO acumulada</span>
+                                        </p>
+                                    </div>
+                                    <span className="bg-slate-100 text-slate-600 text-[10px] font-bold px-2.5 py-1 rounded-lg">{heatData.length} socios</span>
+                                </div>
+                                
+                                <div className="scroll-x scroll-y" style={{maxHeight:'520px'}}>
+                                    <table className="w-full text-left" style={{minWidth:'1000px'}}>
+                                        <thead className="sticky top-0 z-10 bg-white">
+                                            <tr className="border-b border-slate-100">
+                                                <th className="px-3 py-2 text-[10px] font-bold text-slate-400 uppercase sticky left-0 bg-white z-20 w-48 min-w-[180px]">Socio</th>
+                                                {MESES_SHORT.map((m,i)=>(
+                                                    <th key={i} className="px-1 py-2 text-[10px] font-bold text-slate-400 text-center uppercase w-12">{m}</th>
+                                                ))}
+                                                <th className="px-2 py-2 text-[10px] font-bold text-rose-500 text-center uppercase w-14">Imp.</th>
+                                                <th className="px-2 py-2 text-[10px] font-bold text-rose-500 text-center uppercase w-20">Deuda</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {heatData.map((s) => (
+                                                <tr key={s.id} className="border-b border-slate-50 hover:bg-slate-50/50 transition-colors">
+                                                    <td className="px-3 py-1.5 sticky left-0 bg-white z-10">
+                                                        <p className="font-bold text-slate-800 text-[12px] truncate max-w-[170px]" title={`${s.nombre} | Ingreso: ${s.fechaIngreso || 'N/D'} | Pagado: ${fmt(s.totalPagado)}`}>{s.nombre}</p>
+                                                        <div className="flex items-center gap-1 mt-0.5">
+                                                            <span className={`text-[8px] uppercase font-bold px-1 py-0.5 rounded ${s.estado==='ACTIVO'?'bg-emerald-50 text-emerald-600':s.isBeca?'bg-sky-50 text-sky-600':s.estado==='SUSPENDIDO'?'bg-amber-50 text-amber-600':'bg-slate-100 text-slate-400'}`}>{s.estado}</span>
+                                                            {s.tipoSocio && <span className="text-[8px] text-slate-400">{s.tipoSocio}</span>}
+                                                        </div>
+                                                    </td>
+                                                    {s.months.map((mo,mi) => (
+                                                        <td key={mi} className="px-0.5 py-1.5 text-center">
+                                                            <div 
+                                                                className={`mx-auto w-8 h-6 rounded flex items-center justify-center text-[9px] font-bold cursor-default ${
+                                                                    mo.status==='paid' ? 'hm-paid' :
+                                                                    mo.status==='unpaid' ? 'hm-unpaid' :
+                                                                    mo.status==='future' ? 'hm-future' : 'hm-na'
+                                                                }`}
+                                                                title={mo.status==='paid' ? `Pagado (acum: ${fmt(mo.pagado||0)} / exig: ${fmt(mo.exigible||0)})` : mo.status==='unpaid' ? `Impago (acum: ${fmt(mo.pagado||0)} / exig: ${fmt(mo.exigible||0)})` : mo.status==='na' ? 'No aplica (pre-ingreso)' : 'Mes futuro'}
+                                                            >
+                                                                {mo.label || (mo.status==='paid' ? '✓' : mo.status==='unpaid' ? '✗' : mo.status==='future' ? '·' : '-')}
+                                                            </div>
+                                                        </td>
+                                                    ))}
+                                                    <td className="px-2 py-1.5 text-center">
+                                                        {s.impagos > 0 ? (
+                                                            <span className="font-extrabold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-md text-xs">{s.impagos}</span>
+                                                        ) : (s.isActive || s.isBeca) ? (
+                                                            <span className="font-bold text-emerald-600 text-[10px]">0</span>
+                                                        ) : <span className="text-slate-300">—</span>}
+                                                    </td>
+                                                    <td className="px-2 py-1.5 text-center">
+                                                        {s.deudaTotal > 0 ? (
+                                                            <span className="font-extrabold text-rose-600 text-[10px]" title={`Deuda histórica acumulada: ${s.mesesExigibles} meses exigibles × ${fmt(CUOTA)} - ${fmt(s.totalPagado)} pagado`}>{fmt(s.deudaTotal)}</span>
+                                                        ) : (s.isActive || s.isBeca) ? (
+                                                            <span className="font-bold text-emerald-600 text-[10px]">$0</span>
+                                                        ) : <span className="text-slate-300">—</span>}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                            {heatData.length === 0 && (
+                                                <tr><td colSpan={15} className="text-center py-10 text-slate-400 text-sm">No se encontraron socios.</td></tr>
+                                            )}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* DESEMBOLSOS TAB */}
+                        {tab === 'desembolsos' && (
+                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 fade-in">
+                                <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                                    <div>
+                                        <h3 className="font-bold text-slate-800 text-sm flex items-center gap-2">
+                                            <Ic name="arrow-down-right" className="text-rose-500 w-4 h-4" /> Detalle de Desembolsos
+                                        </h3>
+                                        <p className="text-[10px] text-slate-500 mt-0.5">Beneficiarios ocultos por privacidad</p>
+                                    </div>
+                                    <span className="bg-slate-100 text-slate-600 text-[10px] font-bold px-2.5 py-1 rounded-lg">{egresos.length}</span>
+                                </div>
+                                {egresosCat.length > 0 && (
+                                    <div className="px-4 py-2.5 border-b border-slate-100 flex flex-wrap gap-1.5">
+                                        {egresosCat.slice(0,6).map((c,i)=>(
+                                            <div key={i} className="bg-slate-50 rounded-lg px-2 py-1 text-[10px]">
+                                                <span className="font-bold text-slate-600">{c.cat}</span>
+                                                <span className="text-rose-500 font-extrabold ml-1">{fmt(c.total)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                                <div className="scroll-y" style={{maxHeight:'450px'}}>
+                                    <table className="w-full text-left text-sm">
+                                        <thead className="text-[10px] font-bold text-slate-400 bg-white border-b border-slate-100 uppercase sticky top-0 z-10">
+                                            <tr>
+                                                <th className="px-4 py-2.5">Fecha</th>
+                                                <th className="px-4 py-2.5">Categoría</th>
+                                                <th className="px-4 py-2.5 text-right">Monto</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-slate-50">
+                                            {egresos.map((e,i)=>(
+                                                <tr key={i} className="hover:bg-slate-50/80 transition-colors">
+                                                    <td className="px-4 py-2 text-slate-500 font-mono text-xs">{e.fecha}</td>
+                                                    <td className="px-4 py-2"><span className="text-[10px] uppercase font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">{e.cat}</span></td>
+                                                    <td className="px-4 py-2 text-right font-extrabold text-rose-500 text-[13px]">-{fmt(e.monto)}</td>
+                                                </tr>
+                                            ))}
+                                            {egresos.length===0 && <tr><td colSpan="3" className="text-center py-10 text-slate-400 text-sm">No hay desembolsos.</td></tr>}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* FOOTER */}
+                        <div className="mt-6 text-center text-[10px] text-slate-400 font-medium pb-4">
+                            Club Ciclista Santiago Pista · Portal de Transparencia · Datos sincronizados desde Google Sheets
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
