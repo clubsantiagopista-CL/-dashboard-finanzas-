@@ -27,8 +27,8 @@
         .hm-unpaid { background:#FEE2E2; color:#991B1B; }
         .hm-na { background:#EFF6FF; color:#93C5FD; }
         .hm-future { background:#F8FAFC; color:#E2E8F0; }
-        .hm-exc { background:#FEF3C7; color:#92400E; } /* Excepción/novedad activa */
-        .hm-susp { background:#e2e8f0; color:#475569; } /* Suspendido */
+        .hm-exc { background:#FEF3C7; color:#92400E; }
+        .hm-susp { background:#e2e8f0; color:#475569; } 
 
         /* Sticky first column */
         .sticky-col { position:sticky; left:0; z-index:5; background:inherit; }
@@ -49,9 +49,7 @@
 <script type="text/babel">
 const { useState, useMemo, useEffect, useRef } = React;
 
-// ============================================================
 // CONFIG
-// ============================================================
 const SRC = {
     socios:   { l:'Socios',    url:'https://docs.google.com/spreadsheets/d/e/2PACX-1vTti5wNytfqEQj9SKhGO-01aG9MsAfQhnk1UQjxLBZTGd_UoHW4-mEnBvCtbjUfTvGtXfr-NNhgHvRd/pub?gid=113097392&single=true&output=csv' },
     txs2026:  { l:'2026',      url:'https://docs.google.com/spreadsheets/d/e/2PACX-1vTti5wNytfqEQj9SKhGO-01aG9MsAfQhnk1UQjxLBZTGd_UoHW4-mEnBvCtbjUfTvGtXfr-NNhgHvRd/pub?gid=530518501&single=true&output=csv' },
@@ -60,15 +58,11 @@ const SRC = {
 };
 
 const CUOTA_BASE = 17500;
-// REGLA 2: Fecha de corte estricta — deuda comienza desde ene-2025
-const CORTE_ABS = 2025 * 12 + 1; // Absolute month: enero 2025
-
+const CORTE_ABS = 2025 * 12 + 1; // Enero 2025
 const MS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 const MFULL = [{id:'01',n:'Enero'},{id:'02',n:'Febrero'},{id:'03',n:'Marzo'},{id:'04',n:'Abril'},{id:'05',n:'Mayo'},{id:'06',n:'Junio'},{id:'07',n:'Julio'},{id:'08',n:'Agosto'},{id:'09',n:'Septiembre'},{id:'10',n:'Octubre'},{id:'11',n:'Noviembre'},{id:'12',n:'Diciembre'}];
 
-// ============================================================
 // UTILS
-// ============================================================
 const fmt = v => (!v||v===0)?'$0':new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',minimumFractionDigits:0,maximumFractionDigits:0}).format(v);
 const nk = k => k?k.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[()\/\\°#¿?¡!]/g,'').replace(/\s+/g,'_').toLowerCase().trim():'';
 const gv = (r,ks) => { for(const k of ks) if(r[k]!==undefined&&r[k]!==null&&r[k].toString().trim()!=='') return r[k].toString().trim(); return ''; };
@@ -78,7 +72,6 @@ const pd = s => { if(!s) return {y:'',m:'',d:''}; const str=s.toString().trim();
 const abs = (y,m) => parseInt(y)*12+parseInt(m); 
 const classCat = c => { const u=(c||'').toUpperCase(); if(u.includes('CUOTA')||u.includes('APORTE')||u.includes('MENSUALIDAD')) return 'CUOTA'; if(u.includes('ARRIENDO')||u.includes('VELO')||u.includes('PISTA')) return 'ARRIENDO'; if(u.includes('DONACION')||u.includes('DONACIÓN')) return 'DONACION'; return 'OTROS'; };
 
-// CSV LOADER
 const PXS = [u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`];
 const pTxt = t => new Promise((r,j)=>{Papa.parse(t,{header:true,skipEmptyLines:'greedy',transformHeader:h=>h.trim(),complete:x=>r({data:x.data,h:x.meta?.fields||[]}),error:e=>j(e)});});
 const load = async url => {
@@ -87,7 +80,6 @@ const load = async url => {
     throw new Error('Load failed');
 };
 
-// CARTOLA PARSER
 const pCart = (data,anio,f) => data.map(raw => {
     const r=nr(raw),fecha=gv(r,['fecha','date']),desc=gv(r,['descripcion','detalle','glosa']),cat=gv(r,['categoria','clasificacion','cat']);
     let cs,as;
@@ -99,12 +91,9 @@ const pCart = (data,anio,f) => data.map(raw => {
     return {fecha,desc,tipo,monto,sub:tipo==='INGRESO'?classCat(cat):'EGRESO',cat:cat||'Sin Categoría',y:di.y||anio,m:di.m,d:di.d,sk:`${di.y||anio}-${di.m}-${di.d}`};
 }).filter(Boolean);
 
-// ICON
 const Ic = ({name,cls}) => { const ref=useRef(null); useEffect(()=>{if(ref.current){ref.current.innerHTML=`<i data-lucide="${name}" class="${cls||''}"></i>`;if(window.lucide)lucide.createIcons({root:ref.current});}},[name,cls]); return <span ref={ref} style={{display:'inline-flex',alignItems:'center'}} />; };
 
-// ============================================================
 // APP
-// ============================================================
 const App = () => {
     const [socios,setSocios] = useState([]);
     const [txs,setTxs] = useState([]);
@@ -114,8 +103,9 @@ const App = () => {
     const [showDbg,setShowDbg] = useState(false);
 
     const now = new Date();
-    // FILTROS
-    const [yf,setYf] = useState('TODOS');
+    
+    // FILTROS: yf inicializa en el año actual en lugar de "TODOS"
+    const [yf,setYf] = useState(now.getFullYear().toString());
     const [mf,setMf] = useState('TODOS');
     const [sf,setSf] = useState('TODOS');
     const [search,setSearch] = useState('');
@@ -124,7 +114,7 @@ const App = () => {
     const loading = Object.values(ls).some(v=>v===null);
     const errs = Object.values(ls).filter(v=>v&&v!=='ok').length;
 
-    // ---- LOAD ----
+    // LOAD
     useEffect(()=>{(async()=>{
         try{ const {data,h}=await load(SRC.socios.url); setDbg(p=>({...p,socios:{h,n:data.length,s:data[0]}}));
             setSocios(data.map((raw,i)=>{
@@ -139,11 +129,9 @@ const App = () => {
                 const iy=fp.y?parseInt(fp.y):2024; 
                 const im=fp.m?parseInt(fp.m):1;
 
-                // REGLA 3: Suspends y Salidas
                 const fSalida=gv(r,['fecha_de_salida','fecha_salida','fechasalida','baja','retiro']);
                 const fpS=pd(fSalida);
                 const isSuspended = est.includes('SUSPENDID') || est.includes('DESVINCULAD') || est.includes('RETIRAD') || est.includes('INACTIVO');
-                // Si está suspendido pero no tiene fecha, usamos el mes actual como fallback de congelamiento
                 const salidaAbs = fpS.y ? abs(fpS.y, fpS.m) : (isSuspended ? abs(now.getFullYear(), now.getMonth()+1) : 99999);
 
                 return{id:i+1,rut,nombre:n||`S${i+1}`,estado:est,tipo:ts,cuotaBase:CUOTA_BASE,fi,iy,im, isSuspended, salidaAbs};
@@ -169,10 +157,9 @@ const App = () => {
             setLs(p=>({...p,novedades:'ok'}));}catch(e){setLs(p=>({...p,novedades:`Err: ${e}`}));}
     })();},[]);
 
-    // ---- DERIVED ----
+    // DERIVED
     const curAbs = abs(now.getFullYear(), now.getMonth()+1);
 
-    // Generate column headers: from ene-2025 to current month (FOR HEATMAP - IGNORES FILTERS)
     const columns = useMemo(()=>{
         const cols=[];
         for(let a=CORTE_ABS; a<=curAbs; a++){
@@ -182,7 +169,7 @@ const App = () => {
         return cols;
     },[curAbs]);
 
-    // REGLA 1 & 2: txFilt STRICTLY FOLLOWS yf and mf to calculate Saldo momentáneo
+    // txFilt strictly follows yf and mf
     const txFilt = useMemo(()=>{
         return txs.filter(t=>{
             if (parseInt(t.y) < 2025) return false;
@@ -195,7 +182,6 @@ const App = () => {
     const kI = useMemo(()=>txFilt.filter(t=>t.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0),[txFilt]);
     const kE = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0),[txFilt]);
 
-    // ALL cuota txs from 2025+ (FIFO pool para la matriz histórica)
     const txCuota = useMemo(()=>txs.filter(t=>parseInt(t.y)>=2025&&t.tipo==='INGRESO'&&t.sub==='CUOTA'),[txs]);
 
     const getFactorNovedad = (socio, mesAbs) => {
@@ -213,9 +199,6 @@ const App = () => {
         return Math.min(...matching.map(n => n.factor));
     };
 
-    // ============================================================
-    // HEAT MAP DATA: FIFO + Corte 2025 + Suspendidos Stop
-    // ============================================================
     const heatData = useMemo(() => {
         return socios
             .filter(s => {
@@ -250,7 +233,6 @@ const App = () => {
                         continue;
                     }
 
-                    // REGLA 3: Congelar contador de meses impagos en la fecha de salida
                     if (s.isSuspended && mesAbs > s.salidaAbs) {
                         monthData.push({abs:mesAbs, status:'susp', label:'S', cuotaMes:0, exigAcum:exigibleAcum, isSuspendedCell:true});
                         continue;
@@ -296,7 +278,29 @@ const App = () => {
             });
     }, [socios, txCuota, novs, columns, curAbs, search, sf]);
 
-    // REGLA 1: Gráfico interactúa con los filtros
+    // NUEVO KPI: Brecha Recaudación
+    const kpiRecaudacion = useMemo(() => {
+        let colsToSum = columns;
+        if(yf !== 'TODOS') colsToSum = colsToSum.filter(c => c.yearNum === parseInt(yf));
+        if(mf !== 'TODOS') colsToSum = colsToSum.filter(c => c.monthNum === parseInt(mf));
+        const validAbs = colsToSum.map(c => c.abs);
+
+        let optimo = 0;
+        heatData.forEach(s => {
+            s.monthData.forEach(m => {
+                if (validAbs.includes(m.abs)) {
+                    optimo += m.cuotaMes; // Suma la cuota exigible de ese mes filtrado
+                }
+            });
+        });
+
+        // Ingresos REALES por cuotas cobradas en ese mismo periodo
+        const real = txFilt.filter(t => t.tipo === 'INGRESO' && t.sub === 'CUOTA').reduce((a, b) => a + b.monto, 0);
+        
+        return { optimo, real, brecha: real - optimo };
+    }, [heatData, columns, yf, mf, txFilt]);
+
+    // CHART Responsive
     const chartData = useMemo(()=>{
         let cols = columns;
         if(yf !== 'TODOS') cols = cols.filter(c => c.yearNum === parseInt(yf));
@@ -310,13 +314,8 @@ const App = () => {
     
     const maxBar = useMemo(()=>Math.max(...chartData.map(d=>Math.max(d.ing,d.eg)),1),[chartData]);
 
-    // EGRESOS
     const egresos = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').sort((a,b)=>(b.sk||'').localeCompare(a.sk||'')),[txFilt]);
-    const eCat = useMemo(()=>{const m={};egresos.forEach(t=>{const c=t.cat;if(!m[c])m[c]={cat:c,total:0};m[c].total+=t.monto;});return Object.values(m).sort((a,b)=>b.total-a.total);},[egresos]);
 
-    // ============================================================
-    // RENDER HELPERS
-    // ============================================================
     const renderTable = (data, title, colorTheme) => (
         <div className={`bg-white rounded-xl shadow-sm border border-${colorTheme}-200 mb-6 fin`}>
             <div className={`p-3 border-b border-slate-100 bg-${colorTheme}-50 rounded-t-xl flex flex-wrap items-center justify-between gap-2`}>
@@ -389,9 +388,6 @@ const App = () => {
         </div>
     );
 
-    // ============================================================
-    // PARTITIONS FOR HEATMAP
-    // ============================================================
     const heatActive = heatData.filter(s => !s.isSuspended || (s.isSuspended && s.deuda === 0));
     const heatBlacklist = heatData.filter(s => s.isSuspended && s.deuda > 0);
 
@@ -424,69 +420,72 @@ const App = () => {
                         <option value="SUSPENDIDO" className="text-slate-900">Suspendidos/Retirados</option>
                     </select>
                     <span className="text-[10px] text-slate-400 ml-1">● {socios.length} socios · {txs.length} mov.</span>
-                    {errs>0&&<button onClick={()=>setShowDbg(!showDbg)} className="bg-amber-500/20 text-amber-300 text-[10px] px-2 py-1 rounded font-bold cursor-pointer">⚠ {errs}</button>}
                     <button onClick={()=>setShowDbg(!showDbg)} className="bg-white/10 text-slate-400 text-[10px] px-2 py-1 rounded cursor-pointer hover:text-white">dbg</button>
                 </div>
             </div>
         </div>
 
         <div className="max-w-[1700px] mx-auto px-4 py-4">
-            {/* DEBUG */}
-            {showDbg&&(<div className="bg-slate-900 text-slate-300 p-3 rounded-xl mb-4 mono text-[10px] overflow-x-auto scr">
-                <div className="flex justify-between mb-2"><span className="text-emerald-400 font-bold">Debug</span><button onClick={()=>setShowDbg(false)} className="text-slate-500 hover:text-white cursor-pointer">×</button></div>
-                {Object.entries(dbg).map(([k,info])=><div key={k} className="mb-2"><span className="text-sky-400 font-bold">{SRC[k]?.l||k}:</span>{info.error?<span className="text-rose-400 ml-2">{info.error}</span>:<span className="text-slate-500 ml-2">{info.n} filas | [{info.h?.join(', ')}]</span>}</div>)}
-                <div className="border-t border-slate-700 pt-2 mt-2"><span className="text-amber-300">Novedades cargadas: {novs.length}</span>{novs.slice(0,3).map((n,i)=><div key={i} className="text-slate-500 ml-4">{n.nombre}: {n.tipo} (factor:{n.factor}) [{n.fiStr}→{n.ftStr}]</div>)}</div>
-            </div>)}
-
-            {/* KPIs — REGLA 2: Saldo exacto del momento filtrado */}
-            <div className="grid grid-cols-3 gap-3 mb-4">
+            {/* KPIs */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
                 <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 fin">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Ingresos</p>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Ingresos (Periodo)</p>
                     <h2 className="text-xl sm:text-2xl font-extrabold text-emerald-600">{fmt(kI)}</h2>
                 </div>
                 <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 fin">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Egresos</p>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Egresos (Periodo)</p>
                     <h2 className="text-xl sm:text-2xl font-extrabold text-rose-600">{fmt(kE)}</h2>
                 </div>
                 <div className={`p-4 rounded-xl shadow-sm border fin ${(kI-kE)>=0?'bg-indigo-50 border-indigo-100':'bg-rose-50 border-rose-100'}`}>
-                    <p className={`text-[9px] font-bold uppercase tracking-widest mb-1 ${(kI-kE)>=0?'text-indigo-400':'text-rose-400'}`}>Saldo (Periodo Filtrado)</p>
+                    <p className={`text-[9px] font-bold uppercase tracking-widest mb-1 ${(kI-kE)>=0?'text-indigo-400':'text-rose-400'}`}>Saldo Efectivo</p>
                     <h2 className={`text-xl sm:text-2xl font-extrabold ${(kI-kE)>=0?'text-indigo-700':'text-rose-700'}`}>{fmt(kI-kE)}</h2>
+                </div>
+                <div className={`p-4 rounded-xl shadow-sm border fin relative overflow-hidden ${(kpiRecaudacion.brecha)>=0?'bg-emerald-50 border-emerald-100':'bg-rose-50 border-rose-100'}`}>
+                    <p className={`text-[9px] font-bold uppercase tracking-widest mb-1 ${(kpiRecaudacion.brecha)>=0?'text-emerald-500':'text-rose-500'}`}>
+                        {kpiRecaudacion.brecha >= 0 ? "Excedente de Recaudación" : "Saldo en Contra por Morosidad"}
+                    </p>
+                    <h2 className={`text-xl sm:text-2xl font-extrabold ${(kpiRecaudacion.brecha)>=0?'text-emerald-700':'text-rose-700'}`}>
+                        {fmt(kpiRecaudacion.brecha)}
+                    </h2>
+                    <p className="text-[9px] text-slate-500 mt-1.5 font-medium flex gap-2">
+                        <span>Óptimo: <strong className="text-slate-700">{fmt(kpiRecaudacion.optimo)}</strong></span>
+                        <span className="text-slate-300">|</span>
+                        <span>Cobrado: <strong className="text-slate-700">{fmt(kpiRecaudacion.real)}</strong></span>
+                    </p>
                 </div>
             </div>
 
-            {/* CHART: Ingresos vs Egresos */}
+            {/* CHART: Responsivo sin overflow */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-4 fin">
                 <div className="flex items-center justify-between mb-3">
                     <div>
                         <h2 className="font-bold text-slate-800 text-sm">Flujo de Caja</h2>
-                        <p className="text-[10px] text-slate-400">Responde a los filtros de Año/Mes</p>
+                        <p className="text-[10px] text-slate-400">Refleja la actividad del filtro seleccionado</p>
                     </div>
                     <div className="flex items-center gap-4 text-[10px] font-bold">
                         <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm bar-i inline-block"></span> Ingresos</span>
                         <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm bar-e inline-block"></span> Egresos</span>
                     </div>
                 </div>
-                <div className="scr overflow-x-auto" style={{paddingBottom:'4px'}}>
-                    <div className="flex items-end gap-1" style={{height:'160px',minWidth:`${chartData.length*48}px`}}>
-                        {chartData.map((d,i)=>{
-                            const hI=maxBar>0?(d.ing/maxBar)*140:0;
-                            const hE=maxBar>0?(d.eg/maxBar)*140:0;
-                            const isFut=d.abs>curAbs;
-                            return(
-                            <div key={i} className="flex flex-col items-center" style={{width:'44px',opacity:isFut?0.25:1}}>
-                                <div className="flex items-end gap-0.5 w-full justify-center" style={{height:'140px'}}>
-                                    <div className="bar-i rounded-t-sm relative group" style={{width:'42%',height:`${Math.max(hI,2)}px`}} title={fmt(d.ing)}>
-                                        {d.ing>0&&<div className="hidden group-hover:block absolute -top-5 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[8px] px-1 py-0.5 rounded whitespace-nowrap z-10">{fmt(d.ing)}</div>}
-                                    </div>
-                                    <div className="bar-e rounded-t-sm relative group" style={{width:'42%',height:`${Math.max(hE,2)}px`}} title={fmt(d.eg)}>
-                                        {d.eg>0&&<div className="hidden group-hover:block absolute -top-5 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[8px] px-1 py-0.5 rounded whitespace-nowrap z-10">{fmt(d.eg)}</div>}
-                                    </div>
+                <div className="w-full flex items-end justify-around gap-1" style={{height:'160px'}}>
+                    {chartData.map((d,i)=>{
+                        const hI=maxBar>0?(d.ing/maxBar)*140:0;
+                        const hE=maxBar>0?(d.eg/maxBar)*140:0;
+                        const isFut=d.abs>curAbs;
+                        return(
+                        <div key={i} className="flex-1 flex flex-col items-center justify-end h-full min-w-0" style={{opacity:isFut?0.3:1}}>
+                            <div className="flex items-end justify-center gap-[2px] w-full" style={{height:'140px'}}>
+                                <div className="bar-i rounded-t-sm relative group w-full max-w-[24px]" style={{height:`${Math.max(hI,2)}px`}}>
+                                    {d.ing>0&&<div className="hidden group-hover:block absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap z-10">{fmt(d.ing)}</div>}
                                 </div>
-                                <span className="text-[8px] text-slate-400 font-bold mt-1 whitespace-nowrap">{d.label}</span>
-                            </div>);
-                        })}
-                        {chartData.length === 0 && <div className="w-full flex justify-center items-center h-full text-slate-400 text-sm">Sin datos para este periodo</div>}
-                    </div>
+                                <div className="bar-e rounded-t-sm relative group w-full max-w-[24px]" style={{height:`${Math.max(hE,2)}px`}}>
+                                    {d.eg>0&&<div className="hidden group-hover:block absolute -top-6 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[9px] px-1.5 py-0.5 rounded whitespace-nowrap z-10">{fmt(d.eg)}</div>}
+                                </div>
+                            </div>
+                            <span className="text-[9px] text-slate-500 font-bold mt-2 whitespace-nowrap truncate w-full text-center">{d.label}</span>
+                        </div>);
+                    })}
+                    {chartData.length === 0 && <div className="w-full flex justify-center items-center h-full text-slate-400 text-sm">Sin datos para este periodo</div>}
                 </div>
             </div>
 
@@ -500,7 +499,7 @@ const App = () => {
                 </button>
             </div>
 
-            {/* HEAT MAP: Ignore temporals, show Activos and Lista Negra */}
+            {/* HEAT MAP */}
             {tab === 'heatmap' && (
                 <div>
                     {heatActive.length > 0 && renderTable(heatActive, "Matriz de Socios Activos / Regulares", "emerald")}
