@@ -66,7 +66,6 @@ const CORTE_ABS = 2025 * 12 + 1;
 const MS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 const MFULL = [{id:'01',n:'Enero'},{id:'02',n:'Febrero'},{id:'03',n:'Marzo'},{id:'04',n:'Abril'},{id:'05',n:'Mayo'},{id:'06',n:'Junio'},{id:'07',n:'Julio'},{id:'08',n:'Agosto'},{id:'09',n:'Septiembre'},{id:'10',n:'Octubre'},{id:'11',n:'Noviembre'},{id:'12',n:'Diciembre'}];
 
-// DICCIONARIO DE ALIAS (Pagos de terceros)
 const ALIASES = {
     "ARMIJO CHURKOVIC": ["ARMIJO JIMENEZ"]
 };
@@ -75,7 +74,10 @@ const ALIASES = {
 // UTILS
 // ============================================================
 const fmt = v => (!v||v===0)?'$0':new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',minimumFractionDigits:0,maximumFractionDigits:0}).format(v);
-const fmtK = v => v >= 1000 ? new Intl.NumberFormat('es-CL').format(Math.floor(v / 1000)) + 'K' : v.toString();
+
+// Mejora: Formateo dinámico K (Ej: 1500 -> 1.5K, 1000 -> 1K)
+const fmtK = v => v >= 1000 ? (v / 1000).toLocaleString('es-CL', {maximumFractionDigits: 1}) + 'K' : v.toString();
+
 const nk = k => k?k.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[()\/\\°#¿?¡!]/g,'').replace(/\s+/g,'_').toLowerCase().trim():'';
 const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase() : '';
 
@@ -86,7 +88,6 @@ const pd = s => { if(!s) return {y:'',m:'',d:''}; const str=s.toString().trim();
 const abs = (y,m) => parseInt(y)*12+parseInt(m); 
 const classCat = c => { const u=(c||'').toUpperCase(); if(u.includes('CUOTA')||u.includes('APORTE')||u.includes('MENSUALIDAD')) return 'CUOTA'; if(u.includes('ARRIENDO')||u.includes('VELO')||u.includes('PISTA')) return 'ARRIENDO'; if(u.includes('DONACION')||u.includes('DONACIÓN')) return 'DONACION'; return 'OTROS'; };
 
-// CSV LOADER
 const PXS = [u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`];
 const pTxt = t => new Promise((r,j)=>{Papa.parse(t,{header:true,skipEmptyLines:'greedy',transformHeader:h=>h.trim(),complete:x=>r({data:x.data,h:x.meta?.fields||[]}),error:e=>j(e)});});
 const load = async url => {
@@ -95,7 +96,6 @@ const load = async url => {
     throw new Error('Load failed');
 };
 
-// CARTOLA PARSER
 const pCart = (data,anio,f) => data.map(raw => {
     const r=nr(raw),fecha=gv(r,['fecha','date']),desc=gv(r,['descripcion','detalle','glosa']),cat=gv(r,['categoria','clasificacion','cat']);
     let cs,as;
@@ -122,7 +122,7 @@ const App = () => {
 
     const now = new Date();
     
-    // MEJORA 1: Filtros inicializan en el año y mes actual
+    // FILTROS: Inicializan en mes/año en curso
     const [yf,setYf] = useState(now.getFullYear().toString());
     const [mf,setMf] = useState((now.getMonth() + 1).toString().padStart(2, '0'));
     
@@ -188,7 +188,6 @@ const App = () => {
 
     const curAbs = abs(now.getFullYear(), now.getMonth()+1);
 
-    // Todas las columnas desde origen (Ene 2025 a Mes Actual)
     const allColumns = useMemo(()=>{
         const cols=[];
         for(let a=CORTE_ABS; a<=curAbs; a++){
@@ -198,18 +197,24 @@ const App = () => {
         return cols;
     },[curAbs]);
 
-    // MEJORA 3: Lógica dinámica de las columnas a renderizar en la tabla
+    // Lógica inteligente de visualización móvil vs PC
     const displayColumns = useMemo(() => {
-        if (mf === 'TODOS') {
-            if (yf === 'TODOS') return allColumns; 
-            return allColumns.filter(c => c.yearNum === parseInt(yf));
+        let targetY = yf === 'TODOS' ? now.getFullYear() : parseInt(yf);
+        let cols = allColumns.filter(c => c.yearNum === targetY);
+        
+        let targetAbs;
+        if (mf !== 'TODOS') {
+            targetAbs = abs(targetY, parseInt(mf));
+        } else {
+            targetAbs = (targetY === now.getFullYear()) ? curAbs : abs(targetY, 12);
         }
-        const targetY = yf === 'TODOS' ? now.getFullYear() : parseInt(yf);
-        const targetM = parseInt(mf);
-        const targetAbs = abs(targetY, targetM);
-        // Muestra sólo los últimos 6 meses del target
-        return allColumns.filter(c => c.abs <= targetAbs && c.abs > targetAbs - 6);
-    }, [allColumns, yf, mf]);
+
+        // Calcula si el mes está dentro de los 3 meses más recientes para mostrarlo en celular
+        return cols.map(c => ({
+            ...c,
+            isRecent3: c.abs <= targetAbs && c.abs > targetAbs - 3
+        }));
+    }, [allColumns, yf, mf, curAbs, now]);
 
     const txFilt = useMemo(()=>{
         return txs.filter(t=>{
@@ -348,7 +353,6 @@ const App = () => {
             });
     }, [socios, txCuota, novs, allColumns, curAbs, search, sf]);
 
-    // MEJORA 2: KPI Brecha de Recaudación (Por Cobrar)
     const kpiRecaudacion = useMemo(() => {
         let colsToSum = allColumns;
         if(yf !== 'TODOS') colsToSum = colsToSum.filter(c => c.yearNum === parseInt(yf));
@@ -369,7 +373,7 @@ const App = () => {
     }, [heatData, allColumns, yf, mf, txFilt]);
 
 
-    // MEJORA 4: Gráfico a 6 meses móviles y 3 barras
+    // Gráfico de 6 meses independientes con las 3 barras requeridas
     const chartData6Months = useMemo(() => {
         const cols = [];
         for(let i=5; i>=0; i--){
@@ -399,7 +403,6 @@ const App = () => {
 
     const egresos = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').sort((a,b)=>(b.sk||'').localeCompare(a.sk||'')),[txFilt]);
 
-    // MEJORA 3: Renderizado de la tabla adaptado a vista móvil
     const renderTable = (data, title, colorTheme) => (
         <div className={`bg-white rounded-xl shadow-sm border border-${colorTheme}-200 mb-6 fin`}>
             <div className={`p-3 border-b border-slate-100 bg-${colorTheme}-50 rounded-t-xl flex flex-wrap items-center justify-between gap-2`}>
@@ -423,9 +426,12 @@ const App = () => {
                 <table className="border-collapse text-left w-full text-xs min-w-max">
                     <thead className="bg-white sticky top-0 z-10 text-[9px] sm:text-[10px] uppercase text-slate-400 font-bold border-b border-slate-200">
                         <tr>
-                            {/* Ajuste de anchos para el nombre en celular vs desktop */}
                             <th className={`p-2 sticky-col bg-white border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.02)] min-w-[120px] max-w-[120px] sm:min-w-[200px] sm:max-w-[200px]`}>Socio</th>
-                            {displayColumns.map((c,i)=><th key={i} className="p-2 text-center w-8 sm:w-9 font-mono border-r border-slate-100">{c.label}</th>)}
+                            {displayColumns.map((c,i)=>(
+                                <th key={i} className={`p-2 text-center w-8 sm:w-9 font-mono border-r border-slate-100 ${!c.isRecent3 ? 'hidden md:table-cell' : ''}`}>
+                                    {c.label}
+                                </th>
+                            ))}
                             <th className="p-2 text-center bg-slate-50 border-l border-slate-200 w-16 sm:w-20 leading-tight">Cuotas Impagas</th>
                             <th className="p-2 text-right bg-slate-50 w-20 sm:w-24">Deuda</th>
                         </tr>
@@ -442,18 +448,17 @@ const App = () => {
                                 </td>
                                 {displayColumns.map((c, j) => {
                                     const m = s.monthData.find(md => md.abs === c.abs);
-                                    if(!m) return <td key={j} className="p-1 border-r border-slate-50 text-center"></td>;
+                                    if(!m) return <td key={j} className={`p-1 border-r border-slate-50 text-center ${!c.isRecent3 ? 'hidden md:table-cell' : ''}`}></td>;
                                     
                                     const cls=m.status==='paid'?'hm-paid':m.status==='unpaid'?'hm-unpaid':m.status==='susp'?'hm-susp':m.status==='future'?'hm-future':m.status==='na'?'hm-na':'hm-exc';
                                     const exCls=m.isException?'hm-exc':'';
                                     return(
-                                    <td key={j} className="p-1 border-r border-slate-50 text-center">
+                                    <td key={j} className={`p-1 border-r border-slate-50 text-center ${!c.isRecent3 ? 'hidden md:table-cell' : ''}`}>
                                         <div className={`w-full h-7 sm:h-8 flex items-center justify-center rounded-md ${exCls||cls} ${m.status==='future'?'border border-slate-200':''}`} title={m.status==='susp'?'Congelado':`Cuota: ${fmt(m.cuotaMes)} | Exig. Acum: ${fmt(m.exigAcum)}`}>
                                             <span className="text-[9px] sm:text-[10px] font-bold">{m.label}</span>
                                         </div>
                                     </td>);
                                 })}
-                                {/* KPI de Impagos reemplazando sumatoria Pagado */}
                                 <td className="p-2 text-center bg-slate-50 border-l border-slate-200 font-mono font-bold text-rose-600 text-[10px] sm:text-xs">
                                     {s.impagos > 0 ? s.impagos : <span className="text-slate-300">-</span>}
                                 </td>
@@ -518,7 +523,6 @@ const App = () => {
                 {Object.entries(dbg).map(([k,info])=><div key={k} className="mb-2"><span className="text-sky-400 font-bold">{SRC[k]?.l||k}:</span>{info.error?<span className="text-rose-400 ml-2">{info.error}</span>:<span className="text-slate-500 ml-2">{info.n} filas | [{info.h?.join(', ')}]</span>}</div>)}
             </div>)}
 
-            {/* MEJORA 1 y 2: Grilla responsiva 2x2 en móviles, 4x1 en escritorio y KPIs compactos */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3 mb-4">
                 <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin">
                     <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Ingresos</p>
@@ -541,7 +545,6 @@ const App = () => {
                 </div>
             </div>
 
-            {/* MEJORA 4: Gráfico a 6 meses independientes con colores e info condensada */}
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3 md:p-4 mb-4 fin">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 gap-2">
                     <div>
@@ -554,27 +557,34 @@ const App = () => {
                         <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bar-cob inline-block"></span> Por Cobrar</span>
                     </div>
                 </div>
-                <div className="scr overflow-x-auto w-full" style={{paddingBottom:'4px'}}>
-                    <div className="flex items-end justify-between gap-2 w-full min-w-[500px]" style={{height:'160px'}}>
+                
+                {/* Contenedor del gráfico optimizado: pt-8 y altura ajustada para que las etiquetas no se corten */}
+                <div className="scr overflow-x-auto w-full pt-8 px-2" style={{paddingBottom:'4px'}}>
+                    <div className="flex items-end justify-between gap-1 sm:gap-2 w-full min-w-[450px] sm:min-w-[600px]" style={{height:'170px'}}>
                         {chartData6Months.map((d,i)=>{
                             const maxB = maxBar > 0 ? maxBar : 1;
+                            // Se reserva espacio reduciendo el max de la barra a 140px, dejando 30px arriba para texto
                             const hI = (d.ing / maxB) * 140;
                             const hE = (d.eg / maxB) * 140;
                             const hC = (d.porCobrar / maxB) * 140;
                             return(
                             <div key={i} className="flex-1 flex flex-col items-center">
-                                <div className="flex items-end justify-center gap-0.5 sm:gap-1 w-full" style={{height:'140px'}}>
-                                    <div className="bar-ing rounded-t-sm relative group w-full max-w-[12px] sm:max-w-[20px]" style={{height:`${Math.max(hI,2)}px`}}>
-                                        {d.ing>0&&<div className="absolute -top-4 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] font-bold whitespace-nowrap z-10">{fmtK(d.ing)}</div>}
+                                <div className="flex items-end justify-center gap-[1px] sm:gap-1 w-full" style={{height:'140px'}}>
+                                    
+                                    <div className="bar-ing rounded-t-sm relative group w-1/3 max-w-[28px] sm:max-w-[40px]" style={{height:`${Math.max(hI,2)}px`}}>
+                                        {d.ing>0&&<div className="absolute -top-6 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] sm:text-[10px] font-bold whitespace-nowrap z-10">{fmtK(d.ing)}</div>}
                                     </div>
-                                    <div className="bar-egr rounded-t-sm relative group w-full max-w-[12px] sm:max-w-[20px]" style={{height:`${Math.max(hE,2)}px`}}>
-                                        {d.eg>0&&<div className="absolute -top-4 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] font-bold whitespace-nowrap z-10">{fmtK(d.eg)}</div>}
+                                    
+                                    <div className="bar-egr rounded-t-sm relative group w-1/3 max-w-[28px] sm:max-w-[40px]" style={{height:`${Math.max(hE,2)}px`}}>
+                                        {d.eg>0&&<div className="absolute -top-6 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] sm:text-[10px] font-bold whitespace-nowrap z-10">{fmtK(d.eg)}</div>}
                                     </div>
-                                    <div className="bar-cob rounded-t-sm relative group w-full max-w-[12px] sm:max-w-[20px]" style={{height:`${Math.max(hC,2)}px`}}>
-                                        {d.porCobrar>0&&<div className="absolute -top-4 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] font-bold whitespace-nowrap z-10">{fmtK(d.porCobrar)}</div>}
+                                    
+                                    <div className="bar-cob rounded-t-sm relative group w-1/3 max-w-[28px] sm:max-w-[40px]" style={{height:`${Math.max(hC,2)}px`}}>
+                                        {d.porCobrar>0&&<div className="absolute -top-6 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] sm:text-[10px] font-bold whitespace-nowrap z-10">{fmtK(d.porCobrar)}</div>}
                                     </div>
+                                    
                                 </div>
-                                <span className="text-[9px] text-slate-400 font-bold mt-1 whitespace-nowrap">{d.label}</span>
+                                <span className="text-[9px] sm:text-[10px] text-slate-500 font-bold mt-2 whitespace-nowrap">{d.label}</span>
                             </div>);
                         })}
                     </div>
