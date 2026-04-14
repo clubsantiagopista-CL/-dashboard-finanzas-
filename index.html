@@ -34,9 +34,10 @@
         .sticky-col { position:sticky; left:0; z-index:5; background:inherit; }
         thead .sticky-col { z-index:15; }
 
-        /* Bar chart */
-        .bar-i { background:var(--emerald-500, #10b981); }
-        .bar-e { background:var(--rose-500, #f43f5e); }
+        /* Bar chart Colors */
+        .bar-ing { background:var(--navy); }
+        .bar-egr { background:var(--orange); }
+        .bar-cob { background:#FBBF24; } /* Amber-400 */
 
         @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
         .fin { animation:fadeIn .3s ease-out forwards; }
@@ -74,7 +75,7 @@ const ALIASES = {
 // UTILS
 // ============================================================
 const fmt = v => (!v||v===0)?'$0':new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',minimumFractionDigits:0,maximumFractionDigits:0}).format(v);
-const fmtK = v => v >= 1000 ? new Intl.NumberFormat('es-CL').format(Math.round(v / 1000)) + 'K' : v.toString(); // Para etiquetas en miles
+const fmtK = v => v >= 1000 ? new Intl.NumberFormat('es-CL').format(Math.floor(v / 1000)) + 'K' : v.toString();
 const nk = k => k?k.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[()\/\\°#¿?¡!]/g,'').replace(/\s+/g,'_').toLowerCase().trim():'';
 const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase() : '';
 
@@ -161,7 +162,6 @@ const App = () => {
                     im = 9; 
                     salidaAbs = 2025 * 12 + 12; 
                 }
-                // -------------------------------------------------------------------------
 
                 return{id:i+1,rut,nombre:n||`S${i+1}`,estado:est,tipo:ts,cuotaBase:CUOTA_BASE,fi,iy,im, isSuspended, salidaAbs};
             }).filter(s=>s.nombre&&s.nombre.length>2));
@@ -188,7 +188,8 @@ const App = () => {
 
     const curAbs = abs(now.getFullYear(), now.getMonth()+1);
 
-    const columns = useMemo(()=>{
+    // Todas las columnas desde origen (Ene 2025 a Mes Actual)
+    const allColumns = useMemo(()=>{
         const cols=[];
         for(let a=CORTE_ABS; a<=curAbs; a++){
             const y=Math.floor((a-1)/12); const m=((a-1)%12)+1;
@@ -196,6 +197,19 @@ const App = () => {
         }
         return cols;
     },[curAbs]);
+
+    // MEJORA 3: Lógica dinámica de las columnas a renderizar en la tabla
+    const displayColumns = useMemo(() => {
+        if (mf === 'TODOS') {
+            if (yf === 'TODOS') return allColumns; 
+            return allColumns.filter(c => c.yearNum === parseInt(yf));
+        }
+        const targetY = yf === 'TODOS' ? now.getFullYear() : parseInt(yf);
+        const targetM = parseInt(mf);
+        const targetAbs = abs(targetY, targetM);
+        // Muestra sólo los últimos 6 meses del target
+        return allColumns.filter(c => c.abs <= targetAbs && c.abs > targetAbs - 6);
+    }, [allColumns, yf, mf]);
 
     const txFilt = useMemo(()=>{
         return txs.filter(t=>{
@@ -280,7 +294,7 @@ const App = () => {
                 let exigibleAcum = 0;
                 let impagos = 0;
 
-                for (const col of columns) {
+                for (const col of allColumns) {
                     const mesAbs = col.abs;
                     const isFuture = mesAbs > curAbs;
 
@@ -332,11 +346,11 @@ const App = () => {
                 if (b.impagos !== a.impagos) return b.impagos - a.impagos;
                 return a.nombre.localeCompare(b.nombre);
             });
-    }, [socios, txCuota, novs, columns, curAbs, search, sf]);
+    }, [socios, txCuota, novs, allColumns, curAbs, search, sf]);
 
-    // MEJORA 2: Nuevo KPI Brecha de Recaudación
+    // MEJORA 2: KPI Brecha de Recaudación (Por Cobrar)
     const kpiRecaudacion = useMemo(() => {
-        let colsToSum = columns;
+        let colsToSum = allColumns;
         if(yf !== 'TODOS') colsToSum = colsToSum.filter(c => c.yearNum === parseInt(yf));
         if(mf !== 'TODOS') colsToSum = colsToSum.filter(c => c.monthNum === parseInt(mf));
         const validAbs = colsToSum.map(c => c.abs);
@@ -351,16 +365,14 @@ const App = () => {
         });
 
         const real = txFilt.filter(t => t.tipo === 'INGRESO' && t.sub === 'CUOTA').reduce((a, b) => a + b.monto, 0);
-        
         return { optimo, real, brecha: optimo - real };
-    }, [heatData, columns, yf, mf, txFilt]);
+    }, [heatData, allColumns, yf, mf, txFilt]);
 
 
-    // MEJORA 4: Gráfico a 13 meses móviles (estático, independiente de filtros)
-    const chartData13Months = useMemo(() => {
+    // MEJORA 4: Gráfico a 6 meses móviles y 3 barras
+    const chartData6Months = useMemo(() => {
         const cols = [];
-        // Tomamos los últimos 13 meses basados en el mes actual (curAbs)
-        for(let i=12; i>=0; i--){
+        for(let i=5; i>=0; i--){
             const a = curAbs - i;
             const y = Math.floor((a-1)/12); 
             const m = ((a-1)%12)+1;
@@ -368,19 +380,26 @@ const App = () => {
         }
         return cols.map(col => {
             const mtxs = txs.filter(t=>t.y===col.y&&t.m===col.m);
-            return {
-                ...col, 
-                ing:mtxs.filter(t=>t.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0), 
-                eg:mtxs.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0)
-            };
+            const ing = mtxs.filter(t=>t.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0);
+            const eg = mtxs.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0);
+            
+            let optimo = 0;
+            heatData.forEach(s => {
+                const md = s.monthData.find(x => x.abs === col.abs);
+                if(md) optimo += md.cuotaMes;
+            });
+            const ingCuotas = mtxs.filter(t=>t.tipo==='INGRESO'&&t.sub==='CUOTA').reduce((a,b)=>a+b.monto,0);
+            const porCobrar = Math.max(0, optimo - ingCuotas);
+
+            return { ...col, ing, eg, porCobrar };
         });
-    }, [txs, curAbs]);
+    }, [txs, curAbs, heatData]);
     
-    const maxBar = useMemo(()=>Math.max(...chartData13Months.map(d=>Math.max(d.ing,d.eg)),1),[chartData13Months]);
+    const maxBar = useMemo(()=>Math.max(...chartData6Months.map(d=>Math.max(d.ing, d.eg, d.porCobrar)), 1),[chartData6Months]);
 
     const egresos = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').sort((a,b)=>(b.sk||'').localeCompare(a.sk||'')),[txFilt]);
 
-    // MEJORA 3: Reemplazo de columna "Pagado" por "Cuotas Impagas"
+    // MEJORA 3: Renderizado de la tabla adaptado a vista móvil
     const renderTable = (data, title, colorTheme) => (
         <div className={`bg-white rounded-xl shadow-sm border border-${colorTheme}-200 mb-6 fin`}>
             <div className={`p-3 border-b border-slate-100 bg-${colorTheme}-50 rounded-t-xl flex flex-wrap items-center justify-between gap-2`}>
@@ -389,57 +408,59 @@ const App = () => {
                         <Ic name={colorTheme === 'rose' ? 'alert-octagon' : 'grid-3x3'} cls={`w-4 h-4 text-${colorTheme}-600`} /> 
                         {title}
                     </h2>
-                    <p className="text-[10px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-                        <span><span className="inline-block w-2.5 h-2.5 rounded-sm align-middle hm-paid mr-0.5"></span>Pagado</span>
-                        <span><span className="inline-block w-2.5 h-2.5 rounded-sm align-middle hm-unpaid mr-0.5"></span>Impago</span>
-                        <span><span className="inline-block w-2.5 h-2.5 rounded-sm align-middle hm-exc mr-0.5"></span>Excepción</span>
-                        <span><span className="inline-block w-2.5 h-2.5 rounded-sm align-middle hm-susp mr-0.5"></span>Suspendido</span>
-                        <span><span className="inline-block w-2.5 h-2.5 rounded-sm align-middle hm-na mr-0.5"></span>N/A</span>
-                        <span><span className="inline-block w-2.5 h-2.5 rounded-sm align-middle hm-future mr-0.5" style={{border:'1px solid #E2E8F0'}}></span>Futuro</span>
-                        <span className="font-bold text-slate-600 ml-2">Desde ene-2025 · FIFO</span>
+                    <p className="text-[9px] sm:text-[10px] text-slate-500 mt-0.5 flex flex-wrap items-center gap-x-2 sm:gap-x-3 gap-y-1">
+                        <span><span className="inline-block w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-sm align-middle hm-paid mr-0.5"></span>Pagado</span>
+                        <span><span className="inline-block w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-sm align-middle hm-unpaid mr-0.5"></span>Impago</span>
+                        <span><span className="inline-block w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-sm align-middle hm-exc mr-0.5"></span>Excepción</span>
+                        <span><span className="inline-block w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-sm align-middle hm-susp mr-0.5"></span>Suspendido</span>
+                        <span className="font-bold text-slate-600 sm:ml-2">FIFO</span>
                     </p>
                 </div>
                 <span className={`bg-${colorTheme}-100 text-${colorTheme}-700 text-[10px] font-bold px-2 py-1 rounded-lg`}>{data.length} socios</span>
             </div>
 
-            {/* Overflow agregado para diseño responsivo */}
             <div className="scr overflow-x-auto overflow-y-auto" style={{maxHeight:'540px'}}>
-                <table className="border-collapse text-left w-full text-xs" style={{minWidth:`${200 + columns.length*36 + 120}px`}}>
-                    <thead className="bg-white sticky top-0 z-10 text-[10px] uppercase text-slate-400 font-bold border-b border-slate-200">
+                <table className="border-collapse text-left w-full text-xs min-w-max">
+                    <thead className="bg-white sticky top-0 z-10 text-[9px] sm:text-[10px] uppercase text-slate-400 font-bold border-b border-slate-200">
                         <tr>
-                            <th className={`p-2 sticky-col bg-white border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.02)] min-w-[200px]`}>Socio</th>
-                            {columns.map((c,i)=><th key={i} className="p-2 text-center w-9 font-mono border-r border-slate-100">{c.label}</th>)}
-                            <th className="p-2 text-center bg-slate-50 border-l border-slate-200 w-24">Cuotas Impagas</th>
-                            <th className="p-2 text-right bg-slate-50 w-24">Deuda</th>
+                            {/* Ajuste de anchos para el nombre en celular vs desktop */}
+                            <th className={`p-2 sticky-col bg-white border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.02)] min-w-[120px] max-w-[120px] sm:min-w-[200px] sm:max-w-[200px]`}>Socio</th>
+                            {displayColumns.map((c,i)=><th key={i} className="p-2 text-center w-8 sm:w-9 font-mono border-r border-slate-100">{c.label}</th>)}
+                            <th className="p-2 text-center bg-slate-50 border-l border-slate-200 w-16 sm:w-20 leading-tight">Cuotas Impagas</th>
+                            <th className="p-2 text-right bg-slate-50 w-20 sm:w-24">Deuda</th>
                         </tr>
                     </thead>
                     <tbody className="text-slate-700">
                         {data.map((s,i)=>(
                             <tr key={i} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                                <td className="p-2 sticky-col bg-inherit border-r border-slate-200 font-medium truncate max-w-[200px]" title={s.nombre}>
+                                <td className="p-2 sticky-col bg-inherit border-r border-slate-200 font-medium truncate min-w-[120px] max-w-[120px] sm:min-w-[200px] sm:max-w-[200px]" title={s.nombre}>
                                     <div className="flex items-center gap-1.5 justify-between">
-                                        <span className="truncate">{s.nombre}</span>
-                                        {s.isSuspended && <span className="text-[8px] bg-rose-100 text-rose-600 px-1 py-0.5 rounded font-bold">SUSP</span>}
+                                        <span className="truncate text-[10px] sm:text-[11px] leading-tight">{s.nombre}</span>
+                                        {s.isSuspended && <span className="text-[7px] sm:text-[8px] bg-rose-100 text-rose-600 px-1 py-0.5 rounded font-bold">SUSP</span>}
                                     </div>
-                                    <div className="text-[9px] text-slate-400 font-normal mt-0.5">{s.estado}</div>
+                                    <div className="text-[8px] sm:text-[9px] text-slate-400 font-normal mt-0.5 truncate">{s.estado}</div>
                                 </td>
-                                {s.monthData.map((m,j)=>{
+                                {displayColumns.map((c, j) => {
+                                    const m = s.monthData.find(md => md.abs === c.abs);
+                                    if(!m) return <td key={j} className="p-1 border-r border-slate-50 text-center"></td>;
+                                    
                                     const cls=m.status==='paid'?'hm-paid':m.status==='unpaid'?'hm-unpaid':m.status==='susp'?'hm-susp':m.status==='future'?'hm-future':m.status==='na'?'hm-na':'hm-exc';
                                     const exCls=m.isException?'hm-exc':'';
                                     return(
                                     <td key={j} className="p-1 border-r border-slate-50 text-center">
-                                        <div className={`w-full h-8 flex items-center justify-center rounded-md ${exCls||cls} ${m.status==='future'?'border border-slate-200':''}`} title={m.status==='susp'?'Congelado':`Cuota: ${fmt(m.cuotaMes)} | Exig. Acum: ${fmt(m.exigAcum)}`}>
-                                            <span className="text-[10px] font-bold">{m.label}</span>
+                                        <div className={`w-full h-7 sm:h-8 flex items-center justify-center rounded-md ${exCls||cls} ${m.status==='future'?'border border-slate-200':''}`} title={m.status==='susp'?'Congelado':`Cuota: ${fmt(m.cuotaMes)} | Exig. Acum: ${fmt(m.exigAcum)}`}>
+                                            <span className="text-[9px] sm:text-[10px] font-bold">{m.label}</span>
                                         </div>
                                     </td>);
                                 })}
-                                <td className="p-2 text-center bg-slate-50 border-l border-slate-200 font-mono font-bold text-rose-600">
+                                {/* KPI de Impagos reemplazando sumatoria Pagado */}
+                                <td className="p-2 text-center bg-slate-50 border-l border-slate-200 font-mono font-bold text-rose-600 text-[10px] sm:text-xs">
                                     {s.impagos > 0 ? s.impagos : <span className="text-slate-300">-</span>}
                                 </td>
-                                <td className="p-2 text-right bg-slate-50 font-mono font-bold text-rose-600">{fmt(s.deuda)}</td>
+                                <td className="p-2 text-right bg-slate-50 font-mono font-bold text-rose-600 text-[10px] sm:text-xs">{fmt(s.deuda)}</td>
                             </tr>
                         ))}
-                        {data.length===0 && <tr><td colSpan={columns.length+3} className="p-4 text-center text-slate-400">No hay socios que coincidan con los filtros.</td></tr>}
+                        {data.length===0 && <tr><td colSpan={displayColumns.length+3} className="p-4 text-center text-slate-400">No hay socios que coincidan con los filtros.</td></tr>}
                     </tbody>
                 </table>
             </div>
@@ -480,82 +501,82 @@ const App = () => {
                         <option value="TODOS" className="text-slate-900">Todos los meses</option>
                         {MFULL.map(m=><option key={m.id} value={m.id} className="text-slate-900">{m.n}</option>)}
                     </select>
-                    <input type="text" placeholder="Buscar socio..." className="bg-white/10 text-white placeholder-slate-400 text-[11px] px-2.5 py-1.5 rounded-lg border border-white/20 outline-none w-36 focus:bg-white/20" value={search} onChange={e=>setSearch(e.target.value)} />
+                    <input type="text" placeholder="Buscar socio..." className="bg-white/10 text-white placeholder-slate-400 text-[11px] px-2.5 py-1.5 rounded-lg border border-white/20 outline-none w-36 sm:w-48 focus:bg-white/20" value={search} onChange={e=>setSearch(e.target.value)} />
                     <select className="bg-white/10 text-white text-[11px] font-bold px-2.5 py-1.5 rounded-lg border border-white/20 outline-none cursor-pointer" value={sf} onChange={e=>setSf(e.target.value)}>
                         <option value="TODOS" className="text-slate-900">Todos</option>
                         <option value="ACTIVO" className="text-slate-900">Activos</option>
                         <option value="SUSPENDIDO" className="text-slate-900">Suspendidos/Retirados</option>
                     </select>
-                    <span className="text-[10px] text-slate-400 ml-1">● {socios.length} socios · {txs.length} mov.</span>
-                    {errs>0&&<button onClick={()=>setShowDbg(!showDbg)} className="bg-amber-500/20 text-amber-300 text-[10px] px-2 py-1 rounded font-bold cursor-pointer">⚠ {errs}</button>}
-                    <button onClick={()=>setShowDbg(!showDbg)} className="bg-white/10 text-slate-400 text-[10px] px-2 py-1 rounded cursor-pointer hover:text-white">dbg</button>
+                    <button onClick={()=>setShowDbg(!showDbg)} className="bg-white/10 text-slate-400 text-[10px] px-2 py-1 rounded cursor-pointer hover:text-white ml-auto">dbg</button>
                 </div>
             </div>
         </div>
 
-        <div className="max-w-[1700px] mx-auto px-4 py-4">
+        <div className="max-w-[1700px] mx-auto px-2 sm:px-4 py-4">
             {showDbg&&(<div className="bg-slate-900 text-slate-300 p-3 rounded-xl mb-4 mono text-[10px] overflow-x-auto scr">
                 <div className="flex justify-between mb-2"><span className="text-emerald-400 font-bold">Debug</span><button onClick={()=>setShowDbg(false)} className="text-slate-500 hover:text-white cursor-pointer">×</button></div>
                 {Object.entries(dbg).map(([k,info])=><div key={k} className="mb-2"><span className="text-sky-400 font-bold">{SRC[k]?.l||k}:</span>{info.error?<span className="text-rose-400 ml-2">{info.error}</span>:<span className="text-slate-500 ml-2">{info.n} filas | [{info.h?.join(', ')}]</span>}</div>)}
             </div>)}
 
-            {/* MEJORA 5: Grilla de KPIs responsiva (1 col en mobile, 4 en desktop) */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3 mb-4">
-                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 fin">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Ingresos</p>
-                    <h2 className="text-xl sm:text-2xl font-extrabold text-emerald-600">{fmt(kI)}</h2>
+            {/* MEJORA 1 y 2: Grilla responsiva 2x2 en móviles, 4x1 en escritorio y KPIs compactos */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3 mb-4">
+                <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin">
+                    <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Ingresos</p>
+                    <h2 className="text-base sm:text-2xl font-extrabold text-emerald-600">{fmt(kI)}</h2>
                 </div>
-                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 fin">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Total Egresos</p>
-                    <h2 className="text-xl sm:text-2xl font-extrabold text-rose-600">{fmt(kE)}</h2>
+                <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin">
+                    <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Egresos</p>
+                    <h2 className="text-base sm:text-2xl font-extrabold text-rose-600">{fmt(kE)}</h2>
                 </div>
-                <div className={`p-4 rounded-xl shadow-sm border fin ${(kI-kE)>=0?'bg-indigo-50 border-indigo-100':'bg-rose-50 border-rose-100'}`}>
-                    <p className={`text-[9px] font-bold uppercase tracking-widest mb-1 ${(kI-kE)>=0?'text-indigo-400':'text-rose-400'}`}>Saldo (Periodo Filtrado)</p>
-                    <h2 className={`text-xl sm:text-2xl font-extrabold ${(kI-kE)>=0?'text-indigo-700':'text-rose-700'}`}>{fmt(kI-kE)}</h2>
+                <div className={`p-3 md:p-4 rounded-xl shadow-sm border fin ${(kI-kE)>=0?'bg-indigo-50 border-indigo-100':'bg-rose-50 border-rose-100'}`}>
+                    <p className={`text-[8px] sm:text-[9px] font-bold uppercase tracking-widest mb-1 ${(kI-kE)>=0?'text-indigo-400':'text-rose-400'}`}>Caja Efectiva</p>
+                    <h2 className={`text-base sm:text-2xl font-extrabold ${(kI-kE)>=0?'text-indigo-700':'text-rose-700'}`}>{fmt(kI-kE)}</h2>
                 </div>
-                {/* MEJORA 2: Nuevo KPI de Brecha */}
-                <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 fin">
-                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Falta por Recaudar</p>
-                    <h2 className={`text-xl sm:text-2xl font-extrabold ${kpiRecaudacion.brecha > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin relative overflow-hidden">
+                    <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Por Cobrar</p>
+                    <h2 className={`text-base sm:text-2xl font-extrabold ${kpiRecaudacion.brecha > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
                         {fmt(kpiRecaudacion.brecha)}
                     </h2>
-                    <p className="text-[9px] text-slate-500 mt-1">Óptimo esperado: {fmt(kpiRecaudacion.optimo)}</p>
+                    <p className="text-[8px] text-slate-500 mt-1">Óptimo: {fmt(kpiRecaudacion.optimo)}</p>
                 </div>
             </div>
 
-            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 mb-4 fin">
-                <div className="flex items-center justify-between mb-3">
+            {/* MEJORA 4: Gráfico a 6 meses independientes con colores e info condensada */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3 md:p-4 mb-4 fin">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 gap-2">
                     <div>
-                        <h2 className="font-bold text-slate-800 text-sm">Flujo de Caja</h2>
-                        {/* MEJORA 4: Texto indica que no responde a filtros */}
-                        <p className="text-[10px] text-slate-400">Últimos 13 meses móviles (Independiente de filtros)</p>
+                        <h2 className="font-bold text-slate-800 text-sm">Flujo de Caja (Últimos 6 meses)</h2>
+                        <p className="text-[9px] sm:text-[10px] text-slate-400">Histórico estático (Independiente de los filtros superiores)</p>
                     </div>
-                    <div className="flex items-center gap-4 text-[10px] font-bold">
-                        <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm bar-i inline-block"></span> Ingresos</span>
-                        <span className="flex items-center gap-1"><span className="w-3 h-2.5 rounded-sm bar-e inline-block"></span> Egresos</span>
+                    <div className="flex items-center gap-2 sm:gap-4 text-[9px] sm:text-[10px] font-bold flex-wrap">
+                        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bar-ing inline-block"></span> Ingresos</span>
+                        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bar-egr inline-block"></span> Egresos</span>
+                        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bar-cob inline-block"></span> Por Cobrar</span>
                     </div>
                 </div>
-                <div className="scr overflow-x-auto" style={{paddingBottom:'4px'}}>
-                    {/* MEJORA 4 y 5: Ancho completo y responsivo */}
-                    <div className="flex items-end justify-between gap-1 w-full min-w-[600px]" style={{height:'160px'}}>
-                        {chartData13Months.map((d,i)=>{
-                            const hI=maxBar>0?(d.ing/maxBar)*140:0;
-                            const hE=maxBar>0?(d.eg/maxBar)*140:0;
+                <div className="scr overflow-x-auto w-full" style={{paddingBottom:'4px'}}>
+                    <div className="flex items-end justify-between gap-2 w-full min-w-[500px]" style={{height:'160px'}}>
+                        {chartData6Months.map((d,i)=>{
+                            const maxB = maxBar > 0 ? maxBar : 1;
+                            const hI = (d.ing / maxB) * 140;
+                            const hE = (d.eg / maxB) * 140;
+                            const hC = (d.porCobrar / maxB) * 140;
                             return(
                             <div key={i} className="flex-1 flex flex-col items-center">
-                                <div className="flex items-end justify-center gap-1 w-full" style={{height:'140px'}}>
-                                    <div className="bar-i rounded-t-sm relative group w-full max-w-[24px]" style={{height:`${Math.max(hI,2)}px`}} title={fmt(d.ing)}>
-                                        {/* Etiquetas en K siempre visibles */}
+                                <div className="flex items-end justify-center gap-0.5 sm:gap-1 w-full" style={{height:'140px'}}>
+                                    <div className="bar-ing rounded-t-sm relative group w-full max-w-[12px] sm:max-w-[20px]" style={{height:`${Math.max(hI,2)}px`}}>
                                         {d.ing>0&&<div className="absolute -top-4 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] font-bold whitespace-nowrap z-10">{fmtK(d.ing)}</div>}
                                     </div>
-                                    <div className="bar-e rounded-t-sm relative group w-full max-w-[24px]" style={{height:`${Math.max(hE,2)}px`}} title={fmt(d.eg)}>
+                                    <div className="bar-egr rounded-t-sm relative group w-full max-w-[12px] sm:max-w-[20px]" style={{height:`${Math.max(hE,2)}px`}}>
                                         {d.eg>0&&<div className="absolute -top-4 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] font-bold whitespace-nowrap z-10">{fmtK(d.eg)}</div>}
+                                    </div>
+                                    <div className="bar-cob rounded-t-sm relative group w-full max-w-[12px] sm:max-w-[20px]" style={{height:`${Math.max(hC,2)}px`}}>
+                                        {d.porCobrar>0&&<div className="absolute -top-4 left-1/2 -translate-x-1/2 text-slate-600 text-[8px] font-bold whitespace-nowrap z-10">{fmtK(d.porCobrar)}</div>}
                                     </div>
                                 </div>
                                 <span className="text-[9px] text-slate-400 font-bold mt-1 whitespace-nowrap">{d.label}</span>
                             </div>);
                         })}
-                        {chartData13Months.length === 0 && <div className="w-full flex justify-center items-center h-full text-slate-400 text-sm">Sin datos para este periodo</div>}
                     </div>
                 </div>
             </div>
@@ -570,7 +591,7 @@ const App = () => {
             </div>
 
             {tab === 'heatmap' && (
-                <div>
+                <div className="pb-8">
                     {heatActive.length > 0 && renderTable(heatActive, "Matriz de Socios Activos / Regulares", "emerald")}
                     {heatBlacklist.length > 0 && renderTable(heatBlacklist, "Lista Negra (Suspendidos / Retirados con deuda)", "rose")}
                 </div>
