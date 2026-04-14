@@ -67,7 +67,7 @@ const MS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','D
 const MFULL = [{id:'01',n:'Enero'},{id:'02',n:'Febrero'},{id:'03',n:'Marzo'},{id:'04',n:'Abril'},{id:'05',n:'Mayo'},{id:'06',n:'Junio'},{id:'07',n:'Julio'},{id:'08',n:'Agosto'},{id:'09',n:'Septiembre'},{id:'10',n:'Octubre'},{id:'11',n:'Noviembre'},{id:'12',n:'Diciembre'}];
 
 const ALIASES = {
-    "ARMIJO CHURKOVIC": ["ARMIJO JIMENEZ"]
+    "armijo churkovic": ["armijo jimenez"]
 };
 
 // ============================================================
@@ -83,7 +83,9 @@ const fmtK = v => {
 };
 
 const nk = k => k?k.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[()\/\\°#¿?¡!]/g,'').replace(/\s+/g,'_').toLowerCase().trim():'';
-const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase() : '';
+
+// Normalización estricta a minúsculas para cruces exactos
+const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() : '';
 
 const gv = (r,ks) => { for(const k of ks) if(r[k]!==undefined&&r[k]!==null&&r[k].toString().trim()!=='') return r[k].toString().trim(); return ''; };
 const nr = raw => { const o={}; for(const k in raw) o[nk(k)]=(raw[k]||'').toString().trim(); return o; };
@@ -101,14 +103,18 @@ const load = async url => {
 };
 
 const pCart = (data,anio,f) => data.map(raw => {
-    const r=nr(raw),fecha=gv(r,['fecha','date']),desc=gv(r,['descripcion','detalle','glosa']),cat=gv(r,['categoria','clasificacion','cat']);
+    const r=nr(raw),
+          fecha=gv(r,['fecha','date']),
+          desc=gv(r,['descripcion','detalle','glosa']),
+          cat=gv(r,['categoria','clasificacion','cat']),
+          socioId=gv(r,['socioid','id_socio','socio_id','rut_socio','rut','nombre','socio','alumno']); // Extrae ID o RUT explícito si existe en la cartola
     let cs,as;
     if(f==='2026'){cs=gv(r,['cheques__cargos','cheques_cargos','cargos','cargo','cheques']);as=gv(r,['depositos__abonos','depositos_abonos','abonos','abono','depositos']);}
     else{cs=gv(r,['cargos_clp','cargos','cargo']);as=gv(r,['abonos_clp','abonos','abono']);}
     const c=cn(cs),a=cn(as); let tipo='',monto=0;
     if(a>0){tipo='INGRESO';monto=a;}else if(c>0){tipo='EGRESO';monto=c;}else return null;
     const di=pd(fecha);
-    return {fecha,desc,tipo,monto,sub:tipo==='INGRESO'?classCat(cat):'EGRESO',cat:cat||'Sin Categoría',y:di.y||anio,m:di.m,d:di.d,sk:`${di.y||anio}-${di.m}-${di.d}`};
+    return {fecha,desc,tipo,monto,sub:tipo==='INGRESO'?classCat(cat):'EGRESO',cat:cat||'Sin Categoría',y:di.y||anio,m:di.m,d:di.d,sk:`${di.y||anio}-${di.m}-${di.d}`, socioId};
 }).filter(Boolean);
 
 const Ic = ({name,cls}) => { const ref=useRef(null); useEffect(()=>{if(ref.current){ref.current.innerHTML=`<i data-lucide="${name}" class="${cls||''}"></i>`;if(window.lucide)lucide.createIcons({root:ref.current});}},[name,cls]); return <span ref={ref} style={{display:'inline-flex',alignItems:'center'}} />; };
@@ -158,7 +164,7 @@ const App = () => {
 
                 // --- OVERRIDES MANUALES ---
                 const nameUp = unaccent(n);
-                if (nameUp.includes("MATIAS QUEZADA")) {
+                if (nameUp.includes("matias quezada")) {
                     est = "RENUNCIA";
                     isSuspended = true;
                     iy = 2025;
@@ -171,7 +177,7 @@ const App = () => {
             setLs(p=>({...p,socios:'ok'}));}catch(e){setLs(p=>({...p,socios:`Err: ${e}`}));setDbg(p=>({...p,socios:{error:String(e)}}));}
 
         try{const{data,h}=await load(SRC.txs2026.url);setDbg(p=>({...p,txs2026:{h,n:data.length,s:data[0]}}));setTxs(p=>[...p,...pCart(data,'2026','2026')]);setLs(p=>({...p,txs2026:'ok'}));}catch(e){setLs(p=>({...p,txs2026:`Err: ${e}`}));}
-        try{const{data,h}=await load(SRC.txs2025.url);setDbg(p=>({...p,txs2025:{h,n:data.length,s:data[0]}}));setTxs(p=>[...p,...pCart(data,'2025','2025')]);setLs(p=>({...p,txs2025:'ok'}));}catch(e){setLs(p=>({...p,txs2025:`Err: ${e}`}));}
+        try{const{data,h}=await load(SRC.txs2025.url);setDbg(p=>({...p,txs2025:{h,n:data.length,s:data[0]}}));setTxs(p=>[...p,...pCart(data,'2025','2025')]);setLs(p=>({...p,txs2025:'ok'}));}catch(e){setLs(p=>({...p,txs2025:'ok'}));}
 
         try{const{data}=await load(SRC.novedades.url);
             setNovs(data.map(raw=>{const r=nr(raw);
@@ -191,8 +197,7 @@ const App = () => {
 
     const curAbs = abs(now.getFullYear(), now.getMonth()+1);
 
-    // CORRECCIÓN 3: allColumns genera hasta el FINAL del año proyectado
-    // De esta manera el JS nunca trunca los meses, los tendremos todos listos para Tailwind
+    // allColumns siempre mantiene los 12 meses completos del año para el render final
     const allColumns = useMemo(()=>{
         const cols=[];
         const maxAbs = abs(Math.max(now.getFullYear(), 2026), 12); 
@@ -203,7 +208,7 @@ const App = () => {
         return cols;
     },[now]);
 
-    // Filtra para la tabla solo los 12 meses del año activo y calcula isRecent3
+    // Lógica para decidir qué columnas de los 12 meses son las "3 recientes"
     const displayColumns = useMemo(() => {
         let targetY = yf === 'TODOS' ? now.getFullYear() : parseInt(yf);
         let cols = allColumns.filter(c => c.yearNum === targetY);
@@ -215,7 +220,6 @@ const App = () => {
             targetAbs = (targetY === now.getFullYear()) ? curAbs : abs(targetY, 12);
         }
 
-        // Calcula si está entre los últimos 3 meses EXACTOS para la vista de celular
         return cols.map(c => ({
             ...c,
             isRecent3: c.abs <= targetAbs && c.abs >= targetAbs - 2
@@ -263,10 +267,23 @@ const App = () => {
                 const ingresoAbs = abs(s.iy, s.im);
                 const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
 
+                // CRUCE DE PAGOS A PRUEBA DE BALAS
                 const pagos = txCuota.filter(tx => {
-                    const socioName = unaccent(s.nombre);
-                    const txDesc = unaccent(tx.desc);
+                    const socioName = unaccent(s.nombre).trim();
+                    const txDesc = unaccent(tx.desc).trim();
+                    const txSocioId = unaccent(tx.socioId).trim();
 
+                    // 1. Cruce directo si en el CSV/Cartola viene una ID o RUT explícito en la columna 'socioId'
+                    if (txSocioId) {
+                        if (s.id && txSocioId === s.id.toString()) return true;
+                        const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
+                        if (rutClean && txSocioId.includes(rutClean)) return true;
+                        if (socioName === txSocioId) return true;
+                        if (socioName.includes(txSocioId) && txSocioId.length > 3) return true;
+                        if (txSocioId.includes(socioName)) return true;
+                    }
+
+                    // 2. Cruce por Diccionario de Alias (Pagos de terceros)
                     const isAliasMatch = Object.entries(ALIASES).some(([nameKey, aliases]) => {
                         if (socioName.includes(nameKey)) {
                             return aliases.some(alias => txDesc.includes(alias));
@@ -275,30 +292,41 @@ const App = () => {
                     });
                     if (isAliasMatch) return true;
 
-                    const rutClean = s.rut ? s.rut.replace(/[^0-9Kk]/g, '').toUpperCase() : '';
-                    if (rutClean && rutClean.length >= 7) {
-                        const descClean = tx.desc.replace(/[^0-9Kk]/g, '').toUpperCase();
-                        if (descClean.includes(rutClean)) return true;
-                    }
+                    // 3. Cruce por RUT directo incrustado en la descripción de la transferencia
+                    const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
+                    if (rutClean && rutClean.length >= 7 && txDesc.includes(rutClean)) return true;
 
-                    // CORRECCIÓN 1: Limpieza de stopwords bancarias para cruce estricto pero tolerante
-                    const stopWords = ["QUE", "DEL", "LOS", "LAS", "POR", "CON", "SIN", "TEF", "CTA", "CCT", "BCO", "TRF", "SPA", "LTDA", "LIMITADA"];
-                    const descWords = txDesc.split(/[\s_\-\.,]+/).filter(w=>w.length>2 && !stopWords.includes(w));
-                    const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w=>w.length>2 && !stopWords.includes(w));
+                    // 4. Cruce Parcial Inteligente (Resuelve problemas como Calfuleo / Calfu)
+                    const stopWords = ["que", "del", "los", "las", "por", "con", "sin", "tef", "cta", "cct", "bco", "trf", "spa", "ltda", "limitada", "pago", "cuota", "mes", "mensualidad", "transferencia", "abono", "de", "la"];
+                    const descWords = txDesc.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !stopWords.includes(w));
+                    const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !stopWords.includes(w));
                     
                     let matches = 0;
+                    let hasLongMatch = false;
+
                     for (const nw of nameWords) {
                         const isMatch = descWords.some(dw => {
-                            if (nw === dw) return true;
-                            // Match permisivo: Min 3 letras (como MAT y MATIAS) pero deben empezar igual para evitar cruces en medio de apellidos
-                            if (nw.length >= 3 && dw.length >= 3) {
-                                return nw.startsWith(dw) || dw.startsWith(nw);
+                            // Coincidencia exacta
+                            if (nw === dw) {
+                                if (nw.length >= 5) hasLongMatch = true; // Apellidos inusuales/largos
+                                return true;
+                            }
+                            // Coincidencia parcial (ej. CALFU y CALFULEO)
+                            if (nw.length >= 4 && dw.length >= 4 && (nw.startsWith(dw) || dw.startsWith(nw))) {
+                                if (nw.length >= 5) hasLongMatch = true;
+                                return true;
                             }
                             return false;
                         });
                         if (isMatch) matches++;
                     }
-                    return matches >= 2;
+                    
+                    // Si coinciden Nombre y Apellido (2 palabras) es match seguro.
+                    if (matches >= 2) return true;
+                    // Si el banco solo puso un apellido, pero es largo (ej. Calfuleo), lo tomamos.
+                    if (matches === 1 && hasLongMatch) return true;
+
+                    return false;
                 });
                 
                 const totalPagado = pagos.reduce((a,t)=>a+t.monto, 0);
@@ -344,9 +372,9 @@ const App = () => {
                     });
                 }
 
-                // CORRECCIÓN 1: Cálculo puramente matemático para la columna "Cuotas Impagas"
+                // CÁLCULO DE MOROSIDAD (Fórmula de bloqueo matemático de saldos negativos)
                 const deuda = Math.max(0, exigibleAcum - totalPagado);
-                const impagos = s.cuotaBase > 0 ? Math.ceil(deuda / s.cuotaBase) : 0;
+                const impagos = (deuda > 0 && s.cuotaBase > 0) ? Math.ceil(deuda / s.cuotaBase) : 0;
 
                 return {
                     ...s, monthData, impagos, totalPagado, exigibleAcum, deuda,
@@ -380,7 +408,7 @@ const App = () => {
     }, [heatData, allColumns, yf, mf, txFilt]);
 
 
-    // CORRECCIÓN 2: Bucle exactamente de 5 meses (del 4 al 0 son 5 ciclos)
+    // Gráfico dinámico forzado a últimos 5 MESES exactamente
     const chartData5Months = useMemo(() => {
         const cols = [];
         for(let i=4; i>=0; i--){
@@ -435,7 +463,6 @@ const App = () => {
                         <tr>
                             <th className={`p-2 sticky-col bg-white border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.02)] min-w-[120px] max-w-[120px] sm:min-w-[200px] sm:max-w-[200px]`}>Socio</th>
                             {displayColumns.map((c,i)=>(
-                                /* CORRECCIÓN 3: Hidden en móvil para meses no recientes, Visible bloque en escritorio */
                                 <th key={i} className={`p-2 text-center w-8 sm:w-9 font-mono border-r border-slate-100 ${!c.isRecent3 ? 'hidden md:table-cell' : ''}`}>
                                     {c.label}
                                 </th>
@@ -531,7 +558,6 @@ const App = () => {
                 {Object.entries(dbg).map(([k,info])=><div key={k} className="mb-2"><span className="text-sky-400 font-bold">{SRC[k]?.l||k}:</span>{info.error?<span className="text-rose-400 ml-2">{info.error}</span>:<span className="text-slate-500 ml-2">{info.n} filas | [{info.h?.join(', ')}]</span>}</div>)}
             </div>)}
 
-            {/* CORRECCIÓN 3: Consistencia 2x2 en KPIs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3 mb-4">
                 <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin">
                     <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Ingresos</p>
@@ -567,12 +593,10 @@ const App = () => {
                     </div>
                 </div>
                 
-                {/* CORRECCIÓN 2: Ampliación de barras y espacio asegurado para etiquetas */}
                 <div className="scr overflow-x-auto w-full pt-8 px-2" style={{paddingBottom:'4px'}}>
                     <div className="flex items-end justify-between gap-1 sm:gap-2 w-full min-w-[450px] sm:min-w-[600px]" style={{height:'170px'}}>
                         {chartData5Months.map((d,i)=>{
                             const maxB = maxBar > 0 ? maxBar : 1;
-                            // Altura máxima limitada a 140px para nunca tapar el texto, que flota -24px arriba (-top-6)
                             const hI = (d.ing / maxB) * 140;
                             const hE = (d.eg / maxB) * 140;
                             const hC = (d.porCobrar / maxB) * 140;
