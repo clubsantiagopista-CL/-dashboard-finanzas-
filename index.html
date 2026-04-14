@@ -75,8 +75,12 @@ const ALIASES = {
 // ============================================================
 const fmt = v => (!v||v===0)?'$0':new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',minimumFractionDigits:0,maximumFractionDigits:0}).format(v);
 
-// Mejora: Formateo dinámico K (Ej: 1500 -> 1.5K, 1000 -> 1K)
-const fmtK = v => v >= 1000 ? (v / 1000).toLocaleString('es-CL', {maximumFractionDigits: 1}) + 'K' : v.toString();
+// Formateo dinámico K/M robusto y comprimido
+const fmtK = v => {
+    if (v >= 1000000) return (v / 1000000).toLocaleString('es-CL', {maximumFractionDigits: 1}) + 'M';
+    if (v >= 1000) return (v / 1000).toLocaleString('es-CL', {maximumFractionDigits: 1}) + 'K';
+    return v.toString();
+};
 
 const nk = k => k?k.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[()\/\\°#¿?¡!]/g,'').replace(/\s+/g,'_').toLowerCase().trim():'';
 const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase() : '';
@@ -122,10 +126,9 @@ const App = () => {
 
     const now = new Date();
     
-    // FILTROS: Inicializan en mes/año en curso
+    // FILTROS
     const [yf,setYf] = useState(now.getFullYear().toString());
     const [mf,setMf] = useState((now.getMonth() + 1).toString().padStart(2, '0'));
-    
     const [sf,setSf] = useState('TODOS');
     const [search,setSearch] = useState('');
     const [tab,setTab] = useState('heatmap');
@@ -188,16 +191,19 @@ const App = () => {
 
     const curAbs = abs(now.getFullYear(), now.getMonth()+1);
 
+    // CORRECCIÓN 3: allColumns genera hasta el FINAL del año proyectado
+    // De esta manera el JS nunca trunca los meses, los tendremos todos listos para Tailwind
     const allColumns = useMemo(()=>{
         const cols=[];
-        for(let a=CORTE_ABS; a<=curAbs; a++){
+        const maxAbs = abs(Math.max(now.getFullYear(), 2026), 12); 
+        for(let a=CORTE_ABS; a<=maxAbs; a++){
             const y=Math.floor((a-1)/12); const m=((a-1)%12)+1;
             cols.push({abs:a, y:y.toString(), m:m.toString().padStart(2,'0'), label:`${MS[m-1]}'${y.toString().slice(2)}`, yearNum:y, monthNum:m});
         }
         return cols;
-    },[curAbs]);
+    },[now]);
 
-    // Lógica inteligente de visualización móvil vs PC
+    // Filtra para la tabla solo los 12 meses del año activo y calcula isRecent3
     const displayColumns = useMemo(() => {
         let targetY = yf === 'TODOS' ? now.getFullYear() : parseInt(yf);
         let cols = allColumns.filter(c => c.yearNum === targetY);
@@ -209,10 +215,10 @@ const App = () => {
             targetAbs = (targetY === now.getFullYear()) ? curAbs : abs(targetY, 12);
         }
 
-        // Calcula si el mes está dentro de los 3 meses más recientes para mostrarlo en celular
+        // Calcula si está entre los últimos 3 meses EXACTOS para la vista de celular
         return cols.map(c => ({
             ...c,
-            isRecent3: c.abs <= targetAbs && c.abs > targetAbs - 3
+            isRecent3: c.abs <= targetAbs && c.abs >= targetAbs - 2
         }));
     }, [allColumns, yf, mf, curAbs, now]);
 
@@ -254,7 +260,6 @@ const App = () => {
             })
             .map(s => {
                 const isActive = !s.isSuspended;
-                
                 const ingresoAbs = abs(s.iy, s.im);
                 const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
 
@@ -276,14 +281,17 @@ const App = () => {
                         if (descClean.includes(rutClean)) return true;
                     }
 
-                    const descWords = txDesc.split(/[\s_\-\.,]+/).filter(w=>w.length>2);
-                    const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w=>w.length>2);
+                    // CORRECCIÓN 1: Limpieza de stopwords bancarias para cruce estricto pero tolerante
+                    const stopWords = ["QUE", "DEL", "LOS", "LAS", "POR", "CON", "SIN", "TEF", "CTA", "CCT", "BCO", "TRF", "SPA", "LTDA", "LIMITADA"];
+                    const descWords = txDesc.split(/[\s_\-\.,]+/).filter(w=>w.length>2 && !stopWords.includes(w));
+                    const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w=>w.length>2 && !stopWords.includes(w));
                     
                     let matches = 0;
                     for (const nw of nameWords) {
                         const isMatch = descWords.some(dw => {
                             if (nw === dw) return true;
-                            if (nw.length >= 4 && dw.length >= 4) {
+                            // Match permisivo: Min 3 letras (como MAT y MATIAS) pero deben empezar igual para evitar cruces en medio de apellidos
+                            if (nw.length >= 3 && dw.length >= 3) {
                                 return nw.startsWith(dw) || dw.startsWith(nw);
                             }
                             return false;
@@ -297,7 +305,6 @@ const App = () => {
 
                 const monthData = [];
                 let exigibleAcum = 0;
-                let impagos = 0;
 
                 for (const col of allColumns) {
                     const mesAbs = col.abs;
@@ -335,11 +342,11 @@ const App = () => {
                         isException,
                         factor,
                     });
-
-                    if (!paid) impagos++;
                 }
 
+                // CORRECCIÓN 1: Cálculo puramente matemático para la columna "Cuotas Impagas"
                 const deuda = Math.max(0, exigibleAcum - totalPagado);
+                const impagos = s.cuotaBase > 0 ? Math.ceil(deuda / s.cuotaBase) : 0;
 
                 return {
                     ...s, monthData, impagos, totalPagado, exigibleAcum, deuda,
@@ -373,10 +380,10 @@ const App = () => {
     }, [heatData, allColumns, yf, mf, txFilt]);
 
 
-    // Gráfico de 6 meses independientes con las 3 barras requeridas
-    const chartData6Months = useMemo(() => {
+    // CORRECCIÓN 2: Bucle exactamente de 5 meses (del 4 al 0 son 5 ciclos)
+    const chartData5Months = useMemo(() => {
         const cols = [];
-        for(let i=5; i>=0; i--){
+        for(let i=4; i>=0; i--){
             const a = curAbs - i;
             const y = Math.floor((a-1)/12); 
             const m = ((a-1)%12)+1;
@@ -399,7 +406,7 @@ const App = () => {
         });
     }, [txs, curAbs, heatData]);
     
-    const maxBar = useMemo(()=>Math.max(...chartData6Months.map(d=>Math.max(d.ing, d.eg, d.porCobrar)), 1),[chartData6Months]);
+    const maxBar = useMemo(()=>Math.max(...chartData5Months.map(d=>Math.max(d.ing, d.eg, d.porCobrar)), 1),[chartData5Months]);
 
     const egresos = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').sort((a,b)=>(b.sk||'').localeCompare(a.sk||'')),[txFilt]);
 
@@ -428,6 +435,7 @@ const App = () => {
                         <tr>
                             <th className={`p-2 sticky-col bg-white border-r border-slate-200 shadow-[2px_0_5px_rgba(0,0,0,0.02)] min-w-[120px] max-w-[120px] sm:min-w-[200px] sm:max-w-[200px]`}>Socio</th>
                             {displayColumns.map((c,i)=>(
+                                /* CORRECCIÓN 3: Hidden en móvil para meses no recientes, Visible bloque en escritorio */
                                 <th key={i} className={`p-2 text-center w-8 sm:w-9 font-mono border-r border-slate-100 ${!c.isRecent3 ? 'hidden md:table-cell' : ''}`}>
                                     {c.label}
                                 </th>
@@ -523,6 +531,7 @@ const App = () => {
                 {Object.entries(dbg).map(([k,info])=><div key={k} className="mb-2"><span className="text-sky-400 font-bold">{SRC[k]?.l||k}:</span>{info.error?<span className="text-rose-400 ml-2">{info.error}</span>:<span className="text-slate-500 ml-2">{info.n} filas | [{info.h?.join(', ')}]</span>}</div>)}
             </div>)}
 
+            {/* CORRECCIÓN 3: Consistencia 2x2 en KPIs */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3 mb-4">
                 <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin">
                     <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Ingresos</p>
@@ -548,7 +557,7 @@ const App = () => {
             <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3 md:p-4 mb-4 fin">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-3 gap-2">
                     <div>
-                        <h2 className="font-bold text-slate-800 text-sm">Flujo de Caja (Últimos 6 meses)</h2>
+                        <h2 className="font-bold text-slate-800 text-sm">Flujo de Caja (Últimos 5 meses)</h2>
                         <p className="text-[9px] sm:text-[10px] text-slate-400">Histórico estático (Independiente de los filtros superiores)</p>
                     </div>
                     <div className="flex items-center gap-2 sm:gap-4 text-[9px] sm:text-[10px] font-bold flex-wrap">
@@ -558,12 +567,12 @@ const App = () => {
                     </div>
                 </div>
                 
-                {/* Contenedor del gráfico optimizado: pt-8 y altura ajustada para que las etiquetas no se corten */}
+                {/* CORRECCIÓN 2: Ampliación de barras y espacio asegurado para etiquetas */}
                 <div className="scr overflow-x-auto w-full pt-8 px-2" style={{paddingBottom:'4px'}}>
                     <div className="flex items-end justify-between gap-1 sm:gap-2 w-full min-w-[450px] sm:min-w-[600px]" style={{height:'170px'}}>
-                        {chartData6Months.map((d,i)=>{
+                        {chartData5Months.map((d,i)=>{
                             const maxB = maxBar > 0 ? maxBar : 1;
-                            // Se reserva espacio reduciendo el max de la barra a 140px, dejando 30px arriba para texto
+                            // Altura máxima limitada a 140px para nunca tapar el texto, que flota -24px arriba (-top-6)
                             const hI = (d.ing / maxB) * 140;
                             const hE = (d.eg / maxB) * 140;
                             const hC = (d.porCobrar / maxB) * 140;
