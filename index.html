@@ -65,12 +65,6 @@ const CORTE_ABS = 2025 * 12 + 1;
 const MS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 const MFULL = [{id:'01',n:'Enero'},{id:'02',n:'Febrero'},{id:'03',n:'Marzo'},{id:'04',n:'Abril'},{id:'05',n:'Mayo'},{id:'06',n:'Junio'},{id:'07',n:'Julio'},{id:'08',n:'Agosto'},{id:'09',n:'Septiembre'},{id:'10',n:'Octubre'},{id:'11',n:'Noviembre'},{id:'12',n:'Diciembre'}];
 
-// DICCIONARIO DE ALIAS (Pagos de terceros)
-const ALIASES = {
-    // Si el socio tiene este texto en su nombre... -> ...buscará también estos textos en la cartola
-    "ARMIJO CHURKOVIC": ["ARMIJO JIMENEZ"]
-};
-
 // ============================================================
 // UTILS
 // ============================================================
@@ -135,30 +129,20 @@ const App = () => {
                 const r=nr(raw);
                 const n=gv(r,['nombre_completo','nombre','socio']);
                 const rut=gv(r,['rut']);
-                let est=(gv(r,['estado_en_el_club','estado','status'])||'ACTIVO').toUpperCase();
+                const est=(gv(r,['estado_en_el_club','estado','status'])||'ACTIVO').toUpperCase();
                 const ts=gv(r,['tipo_socio','tipo']);
                 
                 const fi=gv(r,['fecha_de_ingreso','fecha_ingreso','fechaingreso']);
                 const fp=pd(fi); 
-                let iy=fp.y?parseInt(fp.y):2024; 
-                let im=fp.m?parseInt(fp.m):1;
+                const iy=fp.y?parseInt(fp.y):2024; 
+                const im=fp.m?parseInt(fp.m):1;
 
                 const fSalida=gv(r,['fecha_act_estado','fecha_de_salida','fecha_salida','fechasalida','baja','retiro']);
                 const fpS=pd(fSalida);
                 
-                let isSuspended = est.includes('SUSPENDID') || est.includes('DESVINCULAD') || est.includes('RETIRAD') || est.includes('INACTIVO') || est.includes('RENUNCIA');
-                let salidaAbs = fpS.y ? abs(fpS.y, fpS.m) : (isSuspended ? abs(now.getFullYear(), now.getMonth()+1) : 99999);
-
-                // --- OVERRIDES MANUALES (Casos de excepción forzados por el usuario) ---
-                const nameUp = unaccent(n);
-                if (nameUp.includes("MATIAS QUEZADA")) {
-                    est = "RENUNCIA";
-                    isSuspended = true;
-                    iy = 2025;
-                    im = 9; // Inicio: Septiembre 2025
-                    salidaAbs = 2025 * 12 + 12; // Fin: Diciembre 2025
-                }
-                // -------------------------------------------------------------------------
+                // CORRECCIÓN 1: Se agrega 'RENUNCIA' a la lista de estados que cortan la deuda
+                const isSuspended = est.includes('SUSPENDID') || est.includes('DESVINCULAD') || est.includes('RETIRAD') || est.includes('INACTIVO') || est.includes('RENUNCIA');
+                const salidaAbs = fpS.y ? abs(fpS.y, fpS.m) : (isSuspended ? abs(now.getFullYear(), now.getMonth()+1) : 99999);
 
                 return{id:i+1,rut,nombre:n||`S${i+1}`,estado:est,tipo:ts,cuotaBase:CUOTA_BASE,fi,iy,im, isSuspended, salidaAbs};
             }).filter(s=>s.nombre&&s.nombre.length>2));
@@ -237,37 +221,25 @@ const App = () => {
                 const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
 
                 const pagos = txCuota.filter(tx => {
-                    const socioName = unaccent(s.nombre);
-                    const txDesc = unaccent(tx.desc);
-
-                    // 1. Match por Alias (Pagos de terceros)
-                    const isAliasMatch = Object.entries(ALIASES).some(([nameKey, aliases]) => {
-                        if (socioName.includes(nameKey)) {
-                            return aliases.some(alias => txDesc.includes(alias));
-                        }
-                        return false;
-                    });
-                    if (isAliasMatch) return true;
-
-                    // 2. Match por RUT directo en la glosa
+                    // Match por RUT directo en la glosa (muy seguro)
                     const rutClean = s.rut ? s.rut.replace(/[^0-9Kk]/g, '').toUpperCase() : '';
                     if (rutClean && rutClean.length >= 7) {
                         const descClean = tx.desc.replace(/[^0-9Kk]/g, '').toUpperCase();
                         if (descClean.includes(rutClean)) return true;
                     }
 
-                    // 3. Match Inteligente de Palabras
-                    const descWords = txDesc.split(/[\s_\-\.,]+/).filter(w=>w.length>2);
-                    const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w=>w.length>2);
+                    // CORRECCIÓN 2: Match más inteligente de palabras cortadas por el banco (Ej: SALAZAR -> SALAZA)
+                    const descStr = unaccent(tx.desc);
+                    const descWords = descStr.split(/[\s_\-\.,]+/).filter(w=>w.length>2);
+                    const nameWords = unaccent(s.nombre).split(/[\s_\-\.,]+/).filter(w=>w.length>2);
                     
                     let matches = 0;
                     for (const nw of nameWords) {
                         const isMatch = descWords.some(dw => {
                             if (nw === dw) return true;
-                            // CORRECCIÓN PARA EVITAR FALSOS POSITIVOS (Ej. QUEZADA =/= QUE)
-                            // Para hacer match parcial seguro, ambas deben tener al menos 4 letras
-                            if (nw.length >= 4 && dw.length >= 4) {
-                                return nw.startsWith(dw) || dw.startsWith(nw);
+                            // Si la palabra de la glosa o del nombre coinciden parcialmente (min 3 letras)
+                            if (nw.length >= 3 && dw.length >= 3) {
+                                return nw.includes(dw) || dw.includes(nw);
                             }
                             return false;
                         });
@@ -301,6 +273,7 @@ const App = () => {
                         continue;
                     }
 
+                    // CORRECCIÓN 3: El factor DEPENDE 100% de la hoja de novedades, ya no del 'Tipo' que diga Beca.
                     const factor = getFactorNovedad(s, mesAbs);
                     const cuotaMes = Math.round(s.cuotaBase * factor);
                     exigibleAcum += cuotaMes;
@@ -423,6 +396,7 @@ const App = () => {
         </div>
     );
 
+    // Separamos en dos tablas: Los regulares y los suspendidos que tienen deudas (Matías Quezada caerá aquí para visibilizar su deuda)
     const heatActive = heatData.filter(s => !s.isSuspended || (s.isSuspended && s.deuda === 0));
     const heatBlacklist = heatData.filter(s => s.isSuspended && s.deuda > 0);
 
