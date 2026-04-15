@@ -84,15 +84,24 @@ const fmtK = v => {
 
 const nk = k => k?k.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[()\/\\°#¿?¡!]/g,'').replace(/\s+/g,'_').toLowerCase().trim():'';
 
-// Normalización estricta a minúsculas y eliminación de espacios en blanco
-const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim() : '';
+// Normalización estricta a minúsculas para cruces exactos
+const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() : '';
 
 const gv = (r,ks) => { for(const k of ks) if(r[k]!==undefined&&r[k]!==null&&r[k].toString().trim()!=='') return r[k].toString().trim(); return ''; };
 const nr = raw => { const o={}; for(const k in raw) o[nk(k)]=(raw[k]||'').toString().trim(); return o; };
 const cn = v => { if(!v||v==='') return 0; if(typeof v==='number') return Math.abs(v); const s=v.toString().trim(); if(!s||s==='-'||s==='$') return 0; const n=Number(s.split(',')[0].replace(/[^0-9-]/g,'')); return isNaN(n)?0:Math.abs(n); };
 const pd = s => { if(!s) return {y:'',m:'',d:''}; const str=s.toString().trim(); let y='',m='',d=''; if(str.includes('/')){const p=str.split('/');if(p.length>=3){if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}else if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}}}else if(str.includes('-')){const p=str.split('-');if(p.length>=3){if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}else if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}}} return {y,m,d}; };
 const abs = (y,m) => parseInt(y)*12+parseInt(m); 
-const classCat = c => { const u=(c||'').toUpperCase(); if(u.includes('CUOTA')||u.includes('APORTE')||u.includes('MENSUALIDAD')) return 'CUOTA'; if(u.includes('ARRIENDO')||u.includes('VELO')||u.includes('PISTA')) return 'ARRIENDO'; if(u.includes('DONACION')||u.includes('DONACIÓN')) return 'DONACION'; return 'OTROS'; };
+
+// --- CORRECCIÓN 1: Clasificación de Categorías Estricta ---
+// Se eliminó 'APORTE' o matches débiles para evitar que pagos de Tricotas u otros se cuenten como Cuota.
+const classCat = c => { 
+    const u=(c||'').toUpperCase(); 
+    if(u.includes('CUOTA')||u.includes('MENSUALIDAD')) return 'CUOTA'; 
+    if(u.includes('ARRIENDO')||u.includes('VELO')||u.includes('PISTA')) return 'ARRIENDO'; 
+    if(u.includes('DONACION')||u.includes('DONACIÓN')) return 'DONACION'; 
+    return 'OTROS'; 
+};
 
 const PXS = [u=>`https://corsproxy.io/?${encodeURIComponent(u)}`,u=>`https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`];
 const pTxt = t => new Promise((r,j)=>{Papa.parse(t,{header:true,skipEmptyLines:'greedy',transformHeader:h=>h.trim(),complete:x=>r({data:x.data,h:x.meta?.fields||[]}),error:e=>j(e)});});
@@ -107,7 +116,7 @@ const pCart = (data,anio,f) => data.map(raw => {
           fecha=gv(r,['fecha','date']),
           desc=gv(r,['descripcion','detalle','glosa']),
           cat=gv(r,['categoria','clasificacion','cat']),
-          socioId=gv(r,['socioid','id_socio','socio_id','rut_socio','rut','nombre','socio','alumno']); // Extrae ID o RUT explícito si existe en la cartola
+          socioId=gv(r,['socioid','id_socio','socio_id','rut_socio','rut','nombre','socio','alumno']); 
     let cs,as;
     if(f==='2026'){cs=gv(r,['cheques__cargos','cheques_cargos','cargos','cargo','cheques']);as=gv(r,['depositos__abonos','depositos_abonos','abonos','abono','depositos']);}
     else{cs=gv(r,['cargos_clp','cargos','cargo']);as=gv(r,['abonos_clp','abonos','abono']);}
@@ -197,7 +206,6 @@ const App = () => {
 
     const curAbs = abs(now.getFullYear(), now.getMonth()+1);
 
-    // allColumns siempre mantiene los 12 meses completos del año para el render final
     const allColumns = useMemo(()=>{
         const cols=[];
         const maxAbs = abs(Math.max(now.getFullYear(), 2026), 12); 
@@ -208,7 +216,6 @@ const App = () => {
         return cols;
     },[now]);
 
-    // Lógica para decidir qué columnas de los 12 meses son las "3 recientes"
     const displayColumns = useMemo(() => {
         let targetY = yf === 'TODOS' ? now.getFullYear() : parseInt(yf);
         let cols = allColumns.filter(c => c.yearNum === targetY);
@@ -267,29 +274,23 @@ const App = () => {
                 const ingresoAbs = abs(s.iy, s.im);
                 const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
 
-                // CRUCE DE PAGOS A PRUEBA DE BALAS CORREGIDO
+                // --- CORRECCIÓN 2: Algoritmo de Cruce Endurecido ---
                 const pagos = txCuota.filter(tx => {
-                    const socioName = unaccent(s.nombre);
-                    const txDesc = unaccent(tx.desc);
-                    const txSocioId = unaccent(tx.socioId);
-                    const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
+                    const socioName = unaccent(s.nombre).trim();
+                    const txDesc = unaccent(tx.desc).trim();
+                    const txSocioId = unaccent(tx.socioId).trim();
 
-                    // 1. Cruce Directo por ID, Nombre o RUT explícito en la columna de la cartola
+                    // 1. Cruce directo ID/Sheet
                     if (txSocioId) {
                         if (s.id && txSocioId === s.id.toString()) return true;
-                        if (txSocioId === socioName) return true;
-                        if (rutClean && rutClean.length >= 7 && txSocioId.includes(rutClean)) return true;
-                        if (socioName.includes(txSocioId) && txSocioId.length >= 4) return true;
-                        if (txSocioId.includes(socioName) && socioName.length >= 4) return true;
+                        const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
+                        if (rutClean && txSocioId.includes(rutClean)) return true;
+                        if (socioName === txSocioId) return true;
+                        if (socioName.includes(txSocioId) && txSocioId.length > 3) return true;
+                        if (txSocioId.includes(socioName)) return true;
                     }
 
-                    // 2. Cruce por RUT directo incrustado en la descripción de la transferencia
-                    if (rutClean && rutClean.length >= 7 && txDesc.includes(rutClean)) return true;
-
-                    // 3. Cruce Directo del Nombre Completo dentro de la descripción (por si no lo separó el banco)
-                    if (socioName.length >= 5 && txDesc.includes(socioName)) return true;
-
-                    // 4. Cruce por Diccionario de Alias (Para pagos realizados por terceros)
+                    // 2. Cruce por Diccionario de Alias
                     const isAliasMatch = Object.entries(ALIASES).some(([nameKey, aliases]) => {
                         if (socioName.includes(nameKey)) {
                             return aliases.some(alias => txDesc.includes(alias));
@@ -298,29 +299,30 @@ const App = () => {
                     });
                     if (isAliasMatch) return true;
 
-                    // 5. Cruce Parcial Inteligente Mejorado (Resuelve problemas como Calfuleo / Calfu)
-                    const stopWords = ["que", "del", "los", "las", "por", "con", "sin", "tef", "cta", "cct", "bco", "trf", "spa", "ltda", "limitada", "pago", "cuota", "mes", "mensualidad", "transferencia", "abono", "de", "la", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
-                    
-                    // Reemplazamos caracteres no alfanuméricos por espacios para asegurar un split limpio
-                    const descClean = txDesc.replace(/[^a-z0-9\s]/g, ' ');
-                    const nameClean = socioName.replace(/[^a-z0-9\s]/g, ' ');
+                    // 3. Cruce por RUT mejorado (limpia puntos y guiones de la glosa bancaria)
+                    const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
+                    const txDescCleanRut = txDesc.replace(/[^0-9k]/g, '');
+                    if (rutClean && rutClean.length >= 7 && txDescCleanRut.includes(rutClean)) return true;
+                    // Intento sin dígito verificador
+                    const rutBase = rutClean.slice(0, -1);
+                    if (rutBase && rutBase.length >= 7 && txDescCleanRut.includes(rutBase)) return true;
 
-                    const descWords = descClean.split(/\s+/).filter(w => w.length > 2 && !stopWords.includes(w));
-                    const nameWords = nameClean.split(/\s+/).filter(w => w.length > 2 && !stopWords.includes(w));
+                    // 4. Cruce Parcial Inteligente ENDURECIDO
+                    const stopWords = ["que", "del", "los", "las", "por", "con", "sin", "tef", "cta", "cct", "bco", "trf", "spa", "ltda", "limitada", "pago", "cuota", "mes", "mensualidad", "transferencia", "abono", "de", "la", "traspaso", "aporte"];
+                    const descWords = txDesc.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !stopWords.includes(w));
+                    const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !stopWords.includes(w));
                     
                     let matches = 0;
-                    let hasLongMatch = false;
+                    let hasVeryLongMatch = false;
 
                     for (const nw of nameWords) {
                         const isMatch = descWords.some(dw => {
-                            // Coincidencia exacta de la palabra
                             if (nw === dw) {
-                                if (nw.length >= 4) hasLongMatch = true; // Identificamos apellidos
+                                if (nw.length >= 8) hasVeryLongMatch = true; 
                                 return true;
                             }
-                            // Coincidencia parcial robusta (ej. CALFU y CALFULEO)
                             if (nw.length >= 4 && dw.length >= 4 && (nw.startsWith(dw) || dw.startsWith(nw))) {
-                                if (nw.length >= 4) hasLongMatch = true;
+                                if (nw.length >= 8) hasVeryLongMatch = true;
                                 return true;
                             }
                             return false;
@@ -328,10 +330,10 @@ const App = () => {
                         if (isMatch) matches++;
                     }
                     
-                    // Si coinciden Nombre y Apellido (2 palabras) es match seguro.
+                    // Exigimos 2 coincidencias (ej: Nombre + Apellido) para evitar robar pagos de otros "Andrés" o "Sergios"
                     if (matches >= 2) return true;
-                    // Si el banco solo puso un apellido, pero es largo/identificable (ej. Calfuleo), lo tomamos.
-                    if (matches === 1 && hasLongMatch) return true;
+                    // Si el banco mandó solo 1 palabra, la aceptamos únicamente si es un apellido extremadamente inusual/largo (8+ letras, Ej: Catrileo)
+                    if (matches === 1 && hasVeryLongMatch) return true;
 
                     return false;
                 });
@@ -379,8 +381,6 @@ const App = () => {
                     });
                 }
 
-                // CÁLCULO DE MOROSIDAD (Fórmula de bloqueo matemático de saldos negativos corregida)
-                // Usamos Math.max para forzar estrictamente que un saldo a favor no reste.
                 const deuda = Math.max(0, exigibleAcum - totalPagado);
                 const impagos = (deuda > 0 && s.cuotaBase > 0) ? Math.ceil(deuda / s.cuotaBase) : 0;
 
@@ -415,8 +415,6 @@ const App = () => {
         return { optimo, real, brecha: optimo - real };
     }, [heatData, allColumns, yf, mf, txFilt]);
 
-
-    // Gráfico dinámico forzado a últimos 5 MESES exactamente
     const chartData5Months = useMemo(() => {
         const cols = [];
         for(let i=4; i>=0; i--){
