@@ -84,8 +84,8 @@ const fmtK = v => {
 
 const nk = k => k?k.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[()\/\\°#¿?¡!]/g,'').replace(/\s+/g,'_').toLowerCase().trim():'';
 
-// Normalización estricta a minúsculas para cruces exactos
-const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase() : '';
+// Normalización estricta a minúsculas y eliminación de espacios en blanco
+const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim() : '';
 
 const gv = (r,ks) => { for(const k of ks) if(r[k]!==undefined&&r[k]!==null&&r[k].toString().trim()!=='') return r[k].toString().trim(); return ''; };
 const nr = raw => { const o={}; for(const k in raw) o[nk(k)]=(raw[k]||'').toString().trim(); return o; };
@@ -267,23 +267,29 @@ const App = () => {
                 const ingresoAbs = abs(s.iy, s.im);
                 const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
 
-                // CRUCE DE PAGOS A PRUEBA DE BALAS
+                // CRUCE DE PAGOS A PRUEBA DE BALAS CORREGIDO
                 const pagos = txCuota.filter(tx => {
-                    const socioName = unaccent(s.nombre).trim();
-                    const txDesc = unaccent(tx.desc).trim();
-                    const txSocioId = unaccent(tx.socioId).trim();
+                    const socioName = unaccent(s.nombre);
+                    const txDesc = unaccent(tx.desc);
+                    const txSocioId = unaccent(tx.socioId);
+                    const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
 
-                    // 1. Cruce directo si en el CSV/Cartola viene una ID o RUT explícito en la columna 'socioId'
+                    // 1. Cruce Directo por ID, Nombre o RUT explícito en la columna de la cartola
                     if (txSocioId) {
                         if (s.id && txSocioId === s.id.toString()) return true;
-                        const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
-                        if (rutClean && txSocioId.includes(rutClean)) return true;
-                        if (socioName === txSocioId) return true;
-                        if (socioName.includes(txSocioId) && txSocioId.length > 3) return true;
-                        if (txSocioId.includes(socioName)) return true;
+                        if (txSocioId === socioName) return true;
+                        if (rutClean && rutClean.length >= 7 && txSocioId.includes(rutClean)) return true;
+                        if (socioName.includes(txSocioId) && txSocioId.length >= 4) return true;
+                        if (txSocioId.includes(socioName) && socioName.length >= 4) return true;
                     }
 
-                    // 2. Cruce por Diccionario de Alias (Pagos de terceros)
+                    // 2. Cruce por RUT directo incrustado en la descripción de la transferencia
+                    if (rutClean && rutClean.length >= 7 && txDesc.includes(rutClean)) return true;
+
+                    // 3. Cruce Directo del Nombre Completo dentro de la descripción (por si no lo separó el banco)
+                    if (socioName.length >= 5 && txDesc.includes(socioName)) return true;
+
+                    // 4. Cruce por Diccionario de Alias (Para pagos realizados por terceros)
                     const isAliasMatch = Object.entries(ALIASES).some(([nameKey, aliases]) => {
                         if (socioName.includes(nameKey)) {
                             return aliases.some(alias => txDesc.includes(alias));
@@ -292,28 +298,29 @@ const App = () => {
                     });
                     if (isAliasMatch) return true;
 
-                    // 3. Cruce por RUT directo incrustado en la descripción de la transferencia
-                    const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
-                    if (rutClean && rutClean.length >= 7 && txDesc.includes(rutClean)) return true;
+                    // 5. Cruce Parcial Inteligente Mejorado (Resuelve problemas como Calfuleo / Calfu)
+                    const stopWords = ["que", "del", "los", "las", "por", "con", "sin", "tef", "cta", "cct", "bco", "trf", "spa", "ltda", "limitada", "pago", "cuota", "mes", "mensualidad", "transferencia", "abono", "de", "la", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+                    
+                    // Reemplazamos caracteres no alfanuméricos por espacios para asegurar un split limpio
+                    const descClean = txDesc.replace(/[^a-z0-9\s]/g, ' ');
+                    const nameClean = socioName.replace(/[^a-z0-9\s]/g, ' ');
 
-                    // 4. Cruce Parcial Inteligente (Resuelve problemas como Calfuleo / Calfu)
-                    const stopWords = ["que", "del", "los", "las", "por", "con", "sin", "tef", "cta", "cct", "bco", "trf", "spa", "ltda", "limitada", "pago", "cuota", "mes", "mensualidad", "transferencia", "abono", "de", "la"];
-                    const descWords = txDesc.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !stopWords.includes(w));
-                    const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !stopWords.includes(w));
+                    const descWords = descClean.split(/\s+/).filter(w => w.length > 2 && !stopWords.includes(w));
+                    const nameWords = nameClean.split(/\s+/).filter(w => w.length > 2 && !stopWords.includes(w));
                     
                     let matches = 0;
                     let hasLongMatch = false;
 
                     for (const nw of nameWords) {
                         const isMatch = descWords.some(dw => {
-                            // Coincidencia exacta
+                            // Coincidencia exacta de la palabra
                             if (nw === dw) {
-                                if (nw.length >= 5) hasLongMatch = true; // Apellidos inusuales/largos
+                                if (nw.length >= 4) hasLongMatch = true; // Identificamos apellidos
                                 return true;
                             }
-                            // Coincidencia parcial (ej. CALFU y CALFULEO)
+                            // Coincidencia parcial robusta (ej. CALFU y CALFULEO)
                             if (nw.length >= 4 && dw.length >= 4 && (nw.startsWith(dw) || dw.startsWith(nw))) {
-                                if (nw.length >= 5) hasLongMatch = true;
+                                if (nw.length >= 4) hasLongMatch = true;
                                 return true;
                             }
                             return false;
@@ -323,7 +330,7 @@ const App = () => {
                     
                     // Si coinciden Nombre y Apellido (2 palabras) es match seguro.
                     if (matches >= 2) return true;
-                    // Si el banco solo puso un apellido, pero es largo (ej. Calfuleo), lo tomamos.
+                    // Si el banco solo puso un apellido, pero es largo/identificable (ej. Calfuleo), lo tomamos.
                     if (matches === 1 && hasLongMatch) return true;
 
                     return false;
@@ -372,7 +379,8 @@ const App = () => {
                     });
                 }
 
-                // CÁLCULO DE MOROSIDAD (Fórmula de bloqueo matemático de saldos negativos)
+                // CÁLCULO DE MOROSIDAD (Fórmula de bloqueo matemático de saldos negativos corregida)
+                // Usamos Math.max para forzar estrictamente que un saldo a favor no reste.
                 const deuda = Math.max(0, exigibleAcum - totalPagado);
                 const impagos = (deuda > 0 && s.cuotaBase > 0) ? Math.ceil(deuda / s.cuotaBase) : 0;
 
