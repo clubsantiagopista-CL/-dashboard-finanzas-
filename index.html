@@ -48,7 +48,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useMemo, useEffect, useRef } = React;
+const { useState, useMemo, useEffect, useRef, useCallback } = React;
 
 // ============================================================
 // CONFIG & CONSTANTS
@@ -70,8 +70,6 @@ const STOP_WORDS = ["que", "del", "los", "las", "por", "con", "sin", "tef", "cta
 
 const ALIASES = {
     "armijo churkovic": ["armijo jimenez"],
-    // Puedes agregar más alias manuales aquí si algún banco es muy rebelde
-    // "victor diaz": ["v.diaz"], 
 };
 
 // ============================================================
@@ -253,7 +251,23 @@ const App = () => {
         return Math.min(...matching.map(n => n.factor));
     };
 
-    // MOTOR DE FRECUENCIA DE PALABRAS: Analiza si un apellido o nombre es único en todo el club
+    const getOptimoForMonth = (mesAbs) => {
+        let opt = 0;
+        let count = 0;
+        socios.forEach(s => {
+            if (s.isSuspended && mesAbs > s.salidaAbs) return;
+            const ingresoAbs = abs(s.iy, s.im);
+            const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
+            if (mesAbs < primerMesExigible) return;
+
+            const factor = getFactorNovedad(s, mesAbs);
+            const c = Math.round(s.cuotaBase * factor);
+            opt += c;
+            if (c > 0) count++;
+        });
+        return { opt, count };
+    };
+
     const wordFreq = useMemo(() => {
         const freq = {};
         socios.forEach(s => {
@@ -277,13 +291,11 @@ const App = () => {
                 const ingresoAbs = abs(s.iy, s.im);
                 const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
 
-                // --- NUEVO ALGORITMO DE CRUCE INTELIGENTE ---
                 const pagos = txCuota.filter(tx => {
                     const txDesc = unaccent(tx.desc).trim();
                     const txSocioId = unaccent(tx.socioId).trim();
                     const socioName = unaccent(s.nombre).trim();
 
-                    // 1. Cruce RUT exacto
                     const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
                     const txDescCleanRut = txDesc.replace(/[^0-9k]/g, '');
                     const txIdCleanRut = txSocioId.replace(/[^0-9k]/g, '');
@@ -293,10 +305,8 @@ const App = () => {
                         if (rutBase.length >= 7 && (txIdCleanRut.includes(rutBase) || txDescCleanRut.includes(rutBase))) return true;
                     }
 
-                    // 2. Cruce ID Directo Exacto
                     if (s.id && txSocioId === s.id.toString()) return true;
 
-                    // 3. Diccionario Manual
                     const isAliasMatch = Object.entries(ALIASES).some(([nameKey, aliases]) => {
                         if (socioName.includes(nameKey)) {
                             return aliases.some(alias => txDesc.includes(alias) || txSocioId.includes(alias));
@@ -305,7 +315,6 @@ const App = () => {
                     });
                     if (isAliasMatch) return true;
 
-                    // 4. Algoritmo de Coincidencia por Frecuencia (Soluciona Victor Diaz y Diego Paredes)
                     const txWords = `${txSocioId} ${txDesc}`.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
                     const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
 
@@ -313,7 +322,6 @@ const App = () => {
                     for (const nw of nameWords) {
                         const isMatch = txWords.some(tw => {
                             if (nw === tw) return true;
-                            // Tolerancia a palabras ligeramente cortadas (ej. abrevian un nombre largo)
                             if (nw.length >= 4 && tw.length >= 4 && (nw.startsWith(tw) || tw.startsWith(nw))) return true;
                             return false;
                         });
@@ -322,16 +330,10 @@ const App = () => {
                         }
                     }
 
-                    // Si hay 2 palabras o más que hacen match (Ej. "Victor" y "Diaz"), es el socio seguro.
                     if (matchedWords.length >= 2) return true;
 
-                    // Si solo hay 1 palabra que hizo match (Ej. solo dice "Diaz" o solo dice "Paredes")
                     if (matchedWords.length === 1) {
-                        const theWord = matchedWords[0];
-                        // Verificamos si esa palabra es ÚNICA en todo el club.
-                        // Si "Diaz" lo tiene solo Victor, se le asigna a él (Corrige su error).
-                        // Si "Diego" lo tienen varios, NO se le asigna a nadie automáticamente para evitar robar pagos (Corrige error de Diego).
-                        if (wordFreq[theWord] === 1) {
+                        if (wordFreq[matchedWords[0]] === 1) {
                             return true;
                         }
                     }
@@ -397,22 +399,29 @@ const App = () => {
             });
     }, [socios, txCuota, novs, allColumns, curAbs, search, sf, wordFreq]);
 
+    // KPI Matemático estricto de Cuotas (alineado con gráfico)
     const kpiRecaudacion = useMemo(() => {
         let colsToSum = allColumns;
         if(yf !== 'TODOS') colsToSum = colsToSum.filter(c => c.yearNum === parseInt(yf));
         if(mf !== 'TODOS') colsToSum = colsToSum.filter(c => c.monthNum === parseInt(mf));
-        const validAbs = colsToSum.map(c => c.abs);
+        
+        const validCols = colsToSum.filter(col => col.abs <= curAbs); 
 
         let optimo = 0;
-        heatData.forEach(s => {
-            s.monthData.forEach(m => {
-                if (validAbs.includes(m.abs)) optimo += m.cuotaMes; 
-            });
+        let countActivos = 0;
+
+        validCols.forEach(col => {
+            const res = getOptimoForMonth(col.abs);
+            optimo += res.opt;
+            countActivos += res.count; 
         });
 
+        const promActivos = validCols.length > 0 ? Math.round(countActivos / validCols.length) : 0;
         const real = txFilt.filter(t => t.tipo === 'INGRESO' && t.sub === 'CUOTA').reduce((a, b) => a + b.monto, 0);
-        return { optimo, real, brecha: optimo - real };
-    }, [heatData, allColumns, yf, mf, txFilt]);
+        const brecha = Math.max(0, optimo - real);
+        
+        return { optimo, real, brecha, promActivos };
+    }, [allColumns, yf, mf, txFilt, curAbs, socios, novs]);
 
     const chartData4Months = useMemo(() => {
         const cols = [];
@@ -427,17 +436,14 @@ const App = () => {
             const ing = mtxs.filter(t=>t.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0);
             const eg = mtxs.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0);
             
-            let optimo = 0;
-            heatData.forEach(s => {
-                const md = s.monthData.find(x => x.abs === col.abs);
-                if(md) optimo += md.cuotaMes;
-            });
+            // Usamos la misma lógica pura que el KPI
+            const optimo = getOptimoForMonth(col.abs).opt;
             const ingCuotas = mtxs.filter(t=>t.tipo==='INGRESO'&&t.sub==='CUOTA').reduce((a,b)=>a+b.monto,0);
             const porCobrar = Math.max(0, optimo - ingCuotas);
 
             return { ...col, ing, eg, porCobrar };
         });
-    }, [txs, curAbs, heatData]);
+    }, [txs, curAbs, socios, novs]);
     
     const maxBar = useMemo(()=>Math.max(...chartData4Months.map(d=>Math.max(d.ing, d.eg, d.porCobrar)), 1),[chartData4Months]);
 
@@ -522,8 +528,9 @@ const App = () => {
         </div>
     );
 
-    const heatActive = heatData.filter(s => !s.isSuspended || (s.isSuspended && s.deuda === 0));
-    const heatBlacklist = heatData.filter(s => s.isSuspended && s.deuda > 0);
+    // NUEVO FILTRO: Separación Estricta de Activos vs Suspendidos
+    const heatActive = heatData.filter(s => !s.isSuspended);
+    const heatBlacklist = heatData.filter(s => s.isSuspended);
 
     return (
     <div className="min-h-screen">
@@ -565,23 +572,23 @@ const App = () => {
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3 mb-4">
                 <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin">
-                    <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Ingresos</p>
-                    <h2 className="text-base sm:text-2xl font-extrabold text-emerald-600">{fmt(kI)}</h2>
+                    <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1"><span className="w-2 h-2 rounded-sm inline-block" style={{background: 'var(--navy)'}}></span>Ingresos</p>
+                    <h2 className="text-base sm:text-2xl font-extrabold" style={{color: 'var(--navy)'}}>{fmt(kI)}</h2>
                 </div>
                 <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin">
-                    <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Egresos</p>
-                    <h2 className="text-base sm:text-2xl font-extrabold text-rose-600">{fmt(kE)}</h2>
+                    <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1 flex items-center gap-1"><span className="w-2 h-2 rounded-sm inline-block" style={{background: 'var(--orange)'}}></span>Egresos</p>
+                    <h2 className="text-base sm:text-2xl font-extrabold" style={{color: 'var(--orange)'}}>{fmt(kE)}</h2>
                 </div>
-                <div className={`p-3 md:p-4 rounded-xl shadow-sm border fin ${(kI-kE)>=0?'bg-indigo-50 border-indigo-100':'bg-rose-50 border-rose-100'}`}>
-                    <p className={`text-[8px] sm:text-[9px] font-bold uppercase tracking-widest mb-1 ${(kI-kE)>=0?'text-indigo-400':'text-rose-400'}`}>Caja Efectiva</p>
-                    <h2 className={`text-base sm:text-2xl font-extrabold ${(kI-kE)>=0?'text-indigo-700':'text-rose-700'}`}>{fmt(kI-kE)}</h2>
+                <div className={`p-3 md:p-4 rounded-xl shadow-sm border fin ${(kI-kE)>=0?'bg-emerald-50 border-emerald-100':'bg-rose-50 border-rose-100'}`}>
+                    <p className={`text-[8px] sm:text-[9px] font-bold uppercase tracking-widest mb-1 ${(kI-kE)>=0?'text-emerald-500':'text-rose-400'}`}>Caja Efectiva</p>
+                    <h2 className={`text-base sm:text-2xl font-extrabold ${(kI-kE)>=0?'text-emerald-600':'text-rose-600'}`}>{fmt(kI-kE)}</h2>
                 </div>
-                <div className="bg-white p-3 md:p-4 rounded-xl shadow-sm border border-slate-200 fin relative overflow-hidden">
-                    <p className="text-[8px] sm:text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-1">Por Cobrar</p>
-                    <h2 className={`text-base sm:text-2xl font-extrabold ${kpiRecaudacion.brecha > 0 ? 'text-amber-500' : 'text-emerald-500'}`}>
+                <div className="bg-amber-50 p-3 md:p-4 rounded-xl shadow-sm border border-amber-100 fin relative overflow-hidden">
+                    <p className="text-[8px] sm:text-[9px] font-bold text-amber-600 uppercase tracking-widest mb-1 flex items-center gap-1"><span className="w-2 h-2 rounded-sm inline-block bg-amber-400"></span>Por Cobrar</p>
+                    <h2 className="text-base sm:text-2xl font-extrabold text-amber-500">
                         {fmt(kpiRecaudacion.brecha)}
                     </h2>
-                    <p className="text-[8px] text-slate-500 mt-1">Óptimo: {fmt(kpiRecaudacion.optimo)}</p>
+                    <p className="text-[8px] text-amber-700/70 mt-1 font-medium leading-tight">Óptimo: ~{kpiRecaudacion.promActivos} activos ({fmt(kpiRecaudacion.optimo)}) <br/> - Cuotas Reales: {fmt(kpiRecaudacion.real)}</p>
                 </div>
             </div>
 
@@ -641,7 +648,7 @@ const App = () => {
             {tab === 'heatmap' && (
                 <div className="pb-8">
                     {heatActive.length > 0 && renderTable(heatActive, "Matriz de Socios Activos / Regulares", "emerald")}
-                    {heatBlacklist.length > 0 && renderTable(heatBlacklist, "Lista Negra (Suspendidos / Retirados con deuda)", "rose")}
+                    {heatBlacklist.length > 0 && renderTable(heatBlacklist, "Socios Suspendidos / Retirados (Lista Negra)", "rose")}
                 </div>
             )}
 
