@@ -88,7 +88,7 @@ const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]
 const gv = (r,ks) => { for(const k of ks) if(r[k]!==undefined&&r[k]!==null&&r[k].toString().trim()!=='') return r[k].toString().trim(); return ''; };
 const nr = raw => { const o={}; for(const k in raw) o[nk(k)]=(raw[k]||'').toString().trim(); return o; };
 const cn = v => { if(!v||v==='') return 0; if(typeof v==='number') return Math.abs(v); const s=v.toString().trim(); if(!s||s==='-'||s==='$') return 0; const n=Number(s.split(',')[0].replace(/[^0-9-]/g,'')); return isNaN(n)?0:Math.abs(n); };
-const pd = s => { if(!s) return {y:'',m:'',d:''}; const str=s.toString().trim(); let y='',m='',d=''; if(str.includes('/')){const p=str.split('/');if(p.length>=3){if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}else if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}}}else if(str.includes('-')){const p=str.split('-');if(p.length>=3){if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}else if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}}} return {y,m,d}; };
+const pd = s => { if(!s) return {y:'',m:'',d:''}; const str=s.toString().trim(); let y='',m('',d=''); if(str.includes('/')){const p=str.split('/');if(p.length>=3){if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}else if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}}}else if(str.includes('-')){const p=str.split('-');if(p.length>=3){if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}else if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}}} return {y,m,d}; };
 const abs = (y,m) => parseInt(y)*12+parseInt(m); 
 
 const classCat = (c, d) => { 
@@ -236,18 +236,33 @@ const App = () => {
     const kE = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0),[txFilt]);
     const txCuota = useMemo(()=>txs.filter(t=>parseInt(t.y)>=2025&&t.tipo==='INGRESO'&&t.sub==='CUOTA'),[txs]);
 
+    // ============================================================
+    // PATCH 3 de 4: Mejorar getFactorNovedad incorporando reglas estrictas
+    // ============================================================
     const getFactorNovedad = (socio, mesAbs) => {
         const matching = novs.filter(n => {
-            const matchRut = socio.rut && n.rut && socio.rut === n.rut;
-            const matchNom = !matchRut && n.nombre && socio.nombre && (() => {
-                const p1 = unaccent(socio.nombre).split(' ').filter(p=>p.length>2);
-                const p2 = unaccent(n.nombre).split(' ').filter(p=>p.length>2);
-                return p1.filter(p=>p2.includes(p)).length >= 2;
-            })();
-            if (!matchRut && !matchNom) return false;
-            return mesAbs >= n.fiAbs && mesAbs <= n.ftAbs;
+            // RUT match (prioridad)
+            if (socio.rut && n.rut) {
+                const r1 = socio.rut.replace(/[^0-9kK]/gi, '').toLowerCase();
+                const r2 = n.rut.replace(/[^0-9kK]/gi, '').toLowerCase();
+                if (r1 === r2 || (r1.length >= 7 && r2.length >= 7 && r1.slice(0,-1) === r2.slice(0,-1))) {
+                    return mesAbs >= n.fiAbs && mesAbs <= n.ftAbs;
+                }
+            }
+            // Nombre: exigir ≥3 palabras O cobertura ≥75%
+            if (n.nombre && socio.nombre) {
+                const p1 = unaccent(socio.nombre).split(/[\s_\-\.,]+/).filter(p=>p.length>2 && !STOP_WORDS.includes(p));
+                const p2 = unaccent(n.nombre).split(/[\s_\-\.,]+/).filter(p=>p.length>2 && !STOP_WORDS.includes(p));
+                const matched = p1.filter(p => p2.some(q => p===q || (p.length>=4 && q.length>=4 && (p.startsWith(q)||q.startsWith(p)))));
+                const maxLen = Math.max(p1.length, p2.length);
+                const cov = maxLen > 0 ? matched.length / maxLen : 0;
+                if (matched.length >= 3 || cov >= 0.75) {
+                    return mesAbs >= n.fiAbs && mesAbs <= n.ftAbs;
+                }
+            }
+            return false;
         });
-        if (matching.length === 0) return 1; 
+        if (matching.length === 0) return 1;
         return Math.min(...matching.map(n => n.factor));
     };
 
@@ -279,6 +294,53 @@ const App = () => {
         return freq;
     }, [socios]);
 
+    // ============================================================
+    // PATCH 1 de 4: Agregar funciones de scoring (MATCHING v2)
+    // ============================================================
+    const scoreSocioTx = useCallback((socio, tx) => {
+        const txText = unaccent(`${tx.socioId || ''} ${tx.desc || ''}`).trim();
+        const socioName = unaccent(socio.nombre).trim();
+
+        // RUT match = certeza total
+        const rutClean = socio.rut ? socio.rut.replace(/[^0-9kK]/gi, '').toLowerCase() : '';
+        if (rutClean && rutClean.length >= 7) {
+            const txClean = txText.replace(/[^0-9kK]/gi, '');
+            const rutBase = rutClean.slice(0, -1);
+            if (txClean.includes(rutClean) || (rutBase.length >= 7 && txClean.includes(rutBase))) return 100;
+        }
+
+        // Alias match
+        const isAlias = Object.entries(ALIASES).some(([k, v]) => {
+            if (socioName.includes(k)) return v.some(a => txText.includes(a));
+            return false;
+        });
+        if (isAlias) return 95;
+
+        // Name scoring: cada palabra ponderada por unicidad en el padrón
+        const txWords = txText.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
+        const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
+        if (nameWords.length === 0) return 0;
+        let wScore = 0, matched = 0;
+        for (const nw of nameWords) {
+            const hit = txWords.some(tw => nw === tw || (nw.length >= 4 && tw.length >= 4 && (nw.startsWith(tw) || tw.startsWith(nw))));
+            if (hit) { matched++; wScore += 1 / (wordFreq[nw] || 1); }
+        }
+        if (matched < 2) return 0;
+        const cov = matched / nameWords.length;
+        return Math.round((cov * 45) + (Math.min(wScore / nameWords.length, 1) * 45));
+    }, [wordFreq]);
+
+    // Cada TX se asigna SOLO al socio con mejor score (evita duplicados)
+    const txAssignments = useMemo(() => {
+        const m = new Map();
+        txCuota.forEach((tx, i) => {
+            let bestId = null, bestSc = 0;
+            socios.forEach(s => { const sc = scoreSocioTx(s, tx); if (sc > bestSc) { bestSc = sc; bestId = s.id; } });
+            if (bestSc >= 30) m.set(i, { sid: bestId, sc: bestSc });
+        });
+        return m;
+    }, [txCuota, socios, scoreSocioTx]);
+
     const heatData = useMemo(() => {
         return socios
             .filter(s => {
@@ -291,54 +353,13 @@ const App = () => {
                 const ingresoAbs = abs(s.iy, s.im);
                 const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
 
-                const pagos = txCuota.filter(tx => {
-                    const txDesc = unaccent(tx.desc).trim();
-                    const txSocioId = unaccent(tx.socioId).trim();
-                    const socioName = unaccent(s.nombre).trim();
-
-                    const rutClean = s.rut ? s.rut.replace(/[^0-9k]/g, '') : '';
-                    const txDescCleanRut = txDesc.replace(/[^0-9k]/g, '');
-                    const txIdCleanRut = txSocioId.replace(/[^0-9k]/g, '');
-                    if (rutClean && rutClean.length >= 7) {
-                        if (txIdCleanRut.includes(rutClean) || txDescCleanRut.includes(rutClean)) return true;
-                        const rutBase = rutClean.slice(0, -1);
-                        if (rutBase.length >= 7 && (txIdCleanRut.includes(rutBase) || txDescCleanRut.includes(rutBase))) return true;
-                    }
-
-                    if (s.id && txSocioId === s.id.toString()) return true;
-
-                    const isAliasMatch = Object.entries(ALIASES).some(([nameKey, aliases]) => {
-                        if (socioName.includes(nameKey)) {
-                            return aliases.some(alias => txDesc.includes(alias) || txSocioId.includes(alias));
-                        }
-                        return false;
-                    });
-                    if (isAliasMatch) return true;
-
-                    const txWords = `${txSocioId} ${txDesc}`.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
-                    const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
-
-                    let matchedWords = [];
-                    for (const nw of nameWords) {
-                        const isMatch = txWords.some(tw => {
-                            if (nw === tw) return true;
-                            if (nw.length >= 4 && tw.length >= 4 && (nw.startsWith(tw) || tw.startsWith(nw))) return true;
-                            return false;
-                        });
-                        if (isMatch && !matchedWords.includes(nw)) {
-                            matchedWords.push(nw);
-                        }
-                    }
-
-                    if (matchedWords.length >= 2) return true;
-
-                    if (matchedWords.length === 1) {
-                        if (wordFreq[matchedWords[0]] === 1) {
-                            return true;
-                        }
-                    }
-
-                    return false;
+                // ============================================================
+                // PATCH 2 de 4: Reemplazar bloque de pagos con asignación exclusiva por scoring
+                // ============================================================
+                // MATCHING v2: Asignación exclusiva por scoring
+                const pagos = txCuota.filter((tx, txIdx) => {
+                    const a = txAssignments.get(txIdx);
+                    return a && a.sid === s.id;
                 });
                 
                 const totalPagado = pagos.reduce((a,t)=>a+t.monto, 0);
@@ -397,7 +418,10 @@ const App = () => {
                 if (b.impagos !== a.impagos) return b.impagos - a.impagos;
                 return a.nombre.localeCompare(b.nombre);
             });
-    }, [socios, txCuota, novs, allColumns, curAbs, search, sf, wordFreq]);
+    // ============================================================
+    // PATCH 4 de 4: Actualizar dependencias del useMemo (Añadido txAssignments)
+    // ============================================================
+    }, [socios, txCuota, novs, allColumns, curAbs, search, sf, wordFreq, txAssignments]);
 
     // KPI Matemático estricto de Cuotas (alineado con gráfico)
     const kpiRecaudacion = useMemo(() => {
@@ -528,7 +552,7 @@ const App = () => {
         </div>
     );
 
-    // NUEVO FILTRO: Separación Estricta de Activos vs Suspendidos
+    // FILTRO: Separación Estricta de Activos vs Suspendidos
     const heatActive = heatData.filter(s => !s.isSuspended);
     const heatBlacklist = heatData.filter(s => s.isSuspended);
 
