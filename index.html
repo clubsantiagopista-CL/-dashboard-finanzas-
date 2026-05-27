@@ -68,8 +68,10 @@ const MFULL = [{id:'01',n:'Enero'},{id:'02',n:'Febrero'},{id:'03',n:'Marzo'},{id
 
 const STOP_WORDS = ["que", "del", "los", "las", "por", "con", "sin", "tef", "cta", "cct", "bco", "trf", "spa", "ltda", "limitada", "pago", "cuota", "mes", "mensualidad", "transferencia", "abono", "de", "la", "traspaso", "aporte", "khipu", "fintoc", "transf", "banco", "estado"];
 
+// Mapeos explícitos para depósitos de terceros o errores comunes de tipeo
 const ALIASES = {
     "armijo churkovic": ["armijo jimenez"],
+    "calfuleo": ["christian calfuleo", "calfuleo ramirez", "matias calfuleo", "christian alejandro calfuleo"],
 };
 
 // ============================================================
@@ -371,17 +373,38 @@ const App = () => {
 
                     const factor = getFactorNovedad(s, mesAbs);
                     const cuotaMes = Math.round(s.cuotaBase * factor);
-                    exigibleAcum += cuotaMes;
+                    
+                    // --- NUEVA REGLA DE TIEMPO PARA EL MES EN CURSO ---
+                    const isCurrentMonth = (mesAbs === curAbs);
+                    const isLastWeek = (now.getDate() >= 24); // Se activa como requerida solo desde el día 24 en adelante
+                    const isRequiredYet = !(isCurrentMonth && !isLastWeek);
 
-                    const paid = totalPagado >= exigibleAcum;
+                    if (isRequiredYet) {
+                        exigibleAcum += cuotaMes;
+                    }
+
+                    // Verifica si el saldo total cubre las exigencias (incluyendo el mes actual si ya se cobró o se pagó adelantado)
+                    const paid = totalPagado >= (isRequiredYet ? exigibleAcum : (exigibleAcum + cuotaMes));
                     const isException = factor < 1;
+
+                    let cellStatus = 'unpaid';
+                    let cellLabel = '✗';
+
+                    if (paid) {
+                        cellStatus = 'paid';
+                        cellLabel = '✓';
+                    } else if (isCurrentMonth && !isLastWeek) {
+                        // Si no está pagado pero no es la última semana, queda en modo pendiente (puntos grises)
+                        cellStatus = 'future';
+                        cellLabel = '·';
+                    }
 
                     monthData.push({
                         abs: mesAbs,
-                        status: paid ? 'paid' : 'unpaid',
-                        label: paid ? '✓' : '✗',
+                        status: cellStatus,
+                        label: cellLabel,
                         cuotaMes,
-                        exigAcum: exigibleAcum,
+                        exigAcum: isRequiredYet ? exigibleAcum : (exigibleAcum + cuotaMes),
                         pagadoAcum: totalPagado,
                         isException,
                         factor,
@@ -401,7 +424,7 @@ const App = () => {
                 if (b.impagos !== a.impagos) return b.impagos - a.impagos;
                 return a.nombre.localeCompare(b.nombre);
             });
-    }, [socios, txCuota, novs, allColumns, curAbs, search, sf, wordFreq, txAssignments]);
+    }, [socios, txCuota, novs, allColumns, curAbs, search, sf, wordFreq, txAssignments, now]);
 
     const kpiRecaudacion = useMemo(() => {
         let colsToSum = allColumns;
@@ -415,7 +438,15 @@ const App = () => {
 
         validCols.forEach(col => {
             const res = getOptimoForMonth(col.abs);
-            optimo += res.opt;
+            
+            // Ajustar el óptimo esperado global si el mes en curso aún no exige la cuota obligatoriamente
+            const isCurrentMonth = (col.abs === curAbs);
+            const isLastWeek = (now.getDate() >= 24);
+            if (isCurrentMonth && !isLastWeek) {
+                // No sumamos el óptimo de este mes aún
+            } else {
+                optimo += res.opt;
+            }
             countActivos += res.count; 
         });
 
@@ -424,7 +455,7 @@ const App = () => {
         const brecha = Math.max(0, optimo - real);
         
         return { optimo, real, brecha, promActivos };
-    }, [allColumns, yf, mf, txFilt, curAbs, socios, novs]);
+    }, [allColumns, yf, mf, txFilt, curAbs, socios, novs, now]);
 
     const chartData4Months = useMemo(() => {
         const cols = [];
