@@ -88,7 +88,7 @@ const unaccent = s => s ? s.toString().normalize("NFD").replace(/[\u0300-\u036f]
 const gv = (r,ks) => { for(const k of ks) if(r[k]!==undefined&&r[k]!==null&&r[k].toString().trim()!=='') return r[k].toString().trim(); return ''; };
 const nr = raw => { const o={}; for(const k in raw) o[nk(k)]=(raw[k]||'').toString().trim(); return o; };
 const cn = v => { if(!v||v==='') return 0; if(typeof v==='number') return Math.abs(v); const s=v.toString().trim(); if(!s||s==='-'||s==='$') return 0; const n=Number(s.split(',')[0].replace(/[^0-9-]/g,'')); return isNaN(n)?0:Math.abs(n); };
-const pd = s => { if(!s) return {y:'',m:'',d:''}; const str=s.toString().trim(); let y='',m('',d=''); if(str.includes('/')){const p=str.split('/');if(p.length>=3){if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}else if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}}}else if(str.includes('-')){const p=str.split('-');if(p.length>=3){if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}else if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}}} return {y,m,d}; };
+const pd = s => { if(!s) return {y:'',m:'',d:''}; const str=s.toString().trim(); let y='',m='',d=''; if(str.includes('/')){const p=str.split('/');if(p.length>=3){if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}else if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}}}else if(str.includes('-')){const p=str.split('-');if(p.length>=3){if(p[0].length===4){y=p[0];m=p[1].padStart(2,'0');d=p[2].padStart(2,'0');}else if(p[2].length===4){d=p[0].padStart(2,'0');m=p[1].padStart(2,'0');y=p[2];}}} return {y,m,d}; };
 const abs = (y,m) => parseInt(y)*12+parseInt(m); 
 
 const classCat = (c, d) => { 
@@ -236,12 +236,8 @@ const App = () => {
     const kE = useMemo(()=>txFilt.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0),[txFilt]);
     const txCuota = useMemo(()=>txs.filter(t=>parseInt(t.y)>=2025&&t.tipo==='INGRESO'&&t.sub==='CUOTA'),[txs]);
 
-    // ============================================================
-    // PATCH 3 de 4: Mejorar getFactorNovedad incorporando reglas estrictas
-    // ============================================================
     const getFactorNovedad = (socio, mesAbs) => {
         const matching = novs.filter(n => {
-            // RUT match (prioridad)
             if (socio.rut && n.rut) {
                 const r1 = socio.rut.replace(/[^0-9kK]/gi, '').toLowerCase();
                 const r2 = n.rut.replace(/[^0-9kK]/gi, '').toLowerCase();
@@ -249,7 +245,6 @@ const App = () => {
                     return mesAbs >= n.fiAbs && mesAbs <= n.ftAbs;
                 }
             }
-            // Nombre: exigir ≥3 palabras O cobertura ≥75%
             if (n.nombre && socio.nombre) {
                 const p1 = unaccent(socio.nombre).split(/[\s_\-\.,]+/).filter(p=>p.length>2 && !STOP_WORDS.includes(p));
                 const p2 = unaccent(n.nombre).split(/[\s_\-\.,]+/).filter(p=>p.length>2 && !STOP_WORDS.includes(p));
@@ -294,14 +289,10 @@ const App = () => {
         return freq;
     }, [socios]);
 
-    // ============================================================
-    // PATCH 1 de 4: Agregar funciones de scoring (MATCHING v2)
-    // ============================================================
     const scoreSocioTx = useCallback((socio, tx) => {
         const txText = unaccent(`${tx.socioId || ''} ${tx.desc || ''}`).trim();
         const socioName = unaccent(socio.nombre).trim();
 
-        // RUT match = certeza total
         const rutClean = socio.rut ? socio.rut.replace(/[^0-9kK]/gi, '').toLowerCase() : '';
         if (rutClean && rutClean.length >= 7) {
             const txClean = txText.replace(/[^0-9kK]/gi, '');
@@ -309,14 +300,12 @@ const App = () => {
             if (txClean.includes(rutClean) || (rutBase.length >= 7 && txClean.includes(rutBase))) return 100;
         }
 
-        // Alias match
         const isAlias = Object.entries(ALIASES).some(([k, v]) => {
             if (socioName.includes(k)) return v.some(a => txText.includes(a));
             return false;
         });
         if (isAlias) return 95;
 
-        // Name scoring: cada palabra ponderada por unicidad en el padrón
         const txWords = txText.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
         const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
         if (nameWords.length === 0) return 0;
@@ -330,7 +319,6 @@ const App = () => {
         return Math.round((cov * 45) + (Math.min(wScore / nameWords.length, 1) * 45));
     }, [wordFreq]);
 
-    // Cada TX se asigna SOLO al socio con mejor score (evita duplicados)
     const txAssignments = useMemo(() => {
         const m = new Map();
         txCuota.forEach((tx, i) => {
@@ -353,17 +341,12 @@ const App = () => {
                 const ingresoAbs = abs(s.iy, s.im);
                 const primerMesExigible = Math.max(ingresoAbs, CORTE_ABS);
 
-                // ============================================================
-                // PATCH 2 de 4: Reemplazar bloque de pagos con asignación exclusiva por scoring
-                // ============================================================
-                // MATCHING v2: Asignación exclusiva por scoring
                 const pagos = txCuota.filter((tx, txIdx) => {
                     const a = txAssignments.get(txIdx);
                     return a && a.sid === s.id;
                 });
                 
                 const totalPagado = pagos.reduce((a,t)=>a+t.monto, 0);
-
                 const monthData = [];
                 let exigibleAcum = 0;
 
@@ -418,12 +401,8 @@ const App = () => {
                 if (b.impagos !== a.impagos) return b.impagos - a.impagos;
                 return a.nombre.localeCompare(b.nombre);
             });
-    // ============================================================
-    // PATCH 4 de 4: Actualizar dependencias del useMemo (Añadido txAssignments)
-    // ============================================================
     }, [socios, txCuota, novs, allColumns, curAbs, search, sf, wordFreq, txAssignments]);
 
-    // KPI Matemático estricto de Cuotas (alineado con gráfico)
     const kpiRecaudacion = useMemo(() => {
         let colsToSum = allColumns;
         if(yf !== 'TODOS') colsToSum = colsToSum.filter(c => c.yearNum === parseInt(yf));
@@ -460,7 +439,6 @@ const App = () => {
             const ing = mtxs.filter(t=>t.tipo==='INGRESO').reduce((a,b)=>a+b.monto,0);
             const eg = mtxs.filter(t=>t.tipo==='EGRESO').reduce((a,b)=>a+b.monto,0);
             
-            // Usamos la misma lógica pura que el KPI
             const optimo = getOptimoForMonth(col.abs).opt;
             const ingCuotas = mtxs.filter(t=>t.tipo==='INGRESO'&&t.sub==='CUOTA').reduce((a,b)=>a+b.monto,0);
             const porCobrar = Math.max(0, optimo - ingCuotas);
@@ -552,7 +530,6 @@ const App = () => {
         </div>
     );
 
-    // FILTRO: Separación Estricta de Activos vs Suspendidos
     const heatActive = heatData.filter(s => !s.isSuspended);
     const heatBlacklist = heatData.filter(s => s.isSuspended);
 
