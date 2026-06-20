@@ -212,7 +212,7 @@ const App = () => {
             cols.push({abs:a, y:y.toString(), m:m.toString().padStart(2,'0'), label:`${MS[m-1]}'${y.toString().slice(2)}`, yearNum:y, monthNum:m});
         }
         return cols;
-    },[now]);
+    },[]);
 
     const displayColumns = useMemo(() => {
         let targetY = yf === 'TODOS' ? now.getFullYear() : parseInt(yf);
@@ -225,7 +225,7 @@ const App = () => {
             ...c,
             isRecent3: c.abs <= targetAbs && c.abs >= targetAbs - 2
         }));
-    }, [allColumns, yf, mf, curAbs, now]);
+    }, [allColumns, yf, mf, curAbs]);
 
     const txFilt = useMemo(()=>txs.filter(t=>{
         if (parseInt(t.y) < 2025) return false;
@@ -248,8 +248,8 @@ const App = () => {
                 }
             }
             if (n.nombre && socio.nombre) {
-                const p1 = unaccent(socio.nombre).split(/[\s_\-\.,]+/).filter(p=>p.length>2 && !STOP_WORDS.includes(p));
-                const p2 = unaccent(n.nombre).split(/[\s_\-\.,]+/).filter(p=>p.length>2 && !STOP_WORDS.includes(p));
+                const p1 = unaccent(socio.nombre).split(/[\s_\-\.]+/).filter(p=>p.length>2 && !STOP_WORDS.includes(p));
+                const p2 = unaccent(n.nombre).split(/[\s_\-\.]+/).filter(p=>p.length>2 && !STOP_WORDS.includes(p));
                 const matched = p1.filter(p => p2.some(q => p===q || (p.length>=4 && q.length>=4 && (p.startsWith(q)||q.startsWith(p)))));
                 const maxLen = Math.max(p1.length, p2.length);
                 const cov = maxLen > 0 ? matched.length / maxLen : 0;
@@ -283,7 +283,7 @@ const App = () => {
     const wordFreq = useMemo(() => {
         const freq = {};
         socios.forEach(s => {
-            const words = unaccent(s.nombre).split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
+            const words = unaccent(s.nombre).split(/[\s_\-\.]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
             words.forEach(w => {
                 freq[w] = (freq[w] || 0) + 1;
             });
@@ -308,8 +308,8 @@ const App = () => {
         });
         if (isAlias) return 95;
 
-        const txWords = txText.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
-        const nameWords = socioName.split(/[\s_\-\.,]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
+        const txWords = txText.split(/[\s_\-\.]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
+        const nameWords = socioName.split(/[\s_\-\.]+/).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
         if (nameWords.length === 0) return 0;
         let wScore = 0, matched = 0;
         for (const nw of nameWords) {
@@ -424,7 +424,7 @@ const App = () => {
                 if (b.impagos !== a.impagos) return b.impagos - a.impagos;
                 return a.nombre.localeCompare(b.nombre);
             });
-    }, [socios, txCuota, novs, allColumns, curAbs, search, sf, wordFreq, txAssignments, now]);
+    }, [socios, txCuota, novs, allColumns, curAbs, search, sf, wordFreq, txAssignments]);
 
     const kpiRecaudacion = useMemo(() => {
         let colsToSum = allColumns;
@@ -455,7 +455,7 @@ const App = () => {
         const brecha = Math.max(0, optimo - real);
         
         return { optimo, real, brecha, promActivos };
-    }, [allColumns, yf, mf, txFilt, curAbs, socios, novs, now]);
+    }, [allColumns, yf, mf, txFilt, curAbs, socios, novs]);
 
     const chartData4Months = useMemo(() => {
         const cols = [];
