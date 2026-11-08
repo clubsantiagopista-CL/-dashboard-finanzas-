@@ -51,6 +51,8 @@ const CONFIG = {
 };
 
 const CONFIG_OK = !CONFIG.SUPABASE_URL.includes('TU-PROYECTO');
+// Links de invitación / recuperación: Supabase agrega #...&type=invite|recovery
+const TIPO_LINK = new URLSearchParams(location.hash.slice(1)).get('type');
 const sb = CONFIG_OK ? supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY) : null;
 
 // ============================================================
@@ -777,7 +779,39 @@ function viewLogin(msg='') {
         <label class="text-[11px] font-bold text-slate-500">Clave</label>
         <input name="password" type="password" required class="inp w-full mb-4 mt-1">
         <button class="btn btn-p w-full" ${!CONFIG_OK ? 'disabled' : ''}>Ingresar</button>
+        <button type="button" onclick="olvideClave(this.form)" class="w-full mt-3 text-[11px] font-bold text-sky-700 hover:underline">¿Primera vez u olvidaste tu clave?</button>
       </form></div>`;
+}
+function viewDefinirClave(msg='') {
+    return `<div class="min-h-screen flex items-center justify-center p-4">
+      <form onsubmit="guardarClave(event)" class="card p-6 w-full max-w-sm">
+        <h1 class="font-extrabold text-slate-800 mb-1">Define tu clave</h1>
+        <p class="text-xs text-slate-500 mb-4">Cuenta: <b>${esc(state.session?.user?.email || '')}</b>. Mínimo 8 caracteres.</p>
+        ${msg ? `<p class="text-xs bg-rose-50 text-rose-700 p-3 rounded-lg mb-3">${esc(msg)}</p>` : ''}
+        <label class="text-[11px] font-bold text-slate-500">Nueva clave</label>
+        <input name="p1" type="password" minlength="8" required autocomplete="new-password" class="inp w-full mb-3 mt-1">
+        <label class="text-[11px] font-bold text-slate-500">Repite la clave</label>
+        <input name="p2" type="password" minlength="8" required autocomplete="new-password" class="inp w-full mb-4 mt-1">
+        <button class="btn btn-p w-full">Guardar clave</button>
+      </form></div>`;
+}
+async function guardarClave(ev) {
+    ev.preventDefault();
+    const f = new FormData(ev.target), p1 = f.get('p1'), p2 = f.get('p2');
+    if (p1 !== p2) { document.getElementById('root').innerHTML = viewDefinirClave('Las claves no coinciden.'); return; }
+    const { error } = await sb.auth.updateUser({ password: p1 });
+    if (error) { document.getElementById('root').innerHTML = viewDefinirClave(error.message); return; }
+    state.definirClave = false; history.replaceState(null, '', location.pathname);
+    toast('Clave guardada. Desde ahora entras con tu email y esta clave.');
+    await onSession(state.session);
+}
+async function olvideClave(form) {
+    const email = form.email.value.trim();
+    if (!email) { state.loginMsg = 'Escribe tu email y vuelve a presionar el enlace.'; render(); return; }
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+    state.loginMsg = error ? error.message : '';
+    render();
+    if (!error) toast('Si el email está registrado, te llegará un enlace para definir tu clave.');
 }
 
 function viewCartola() {
@@ -1571,6 +1605,7 @@ function render() {
     const root = document.getElementById('root');
     if (state.loading) { root.innerHTML = `<div class="min-h-screen flex items-center justify-center"><div class="w-10 h-10 border-4 border-slate-200 rounded-full sp" style="border-top-color:var(--navy)"></div></div>`; return; }
     if (!state.session) { root.innerHTML = viewLogin(state.loginMsg); return; }
+    if (state.definirClave) { root.innerHTML = viewDefinirClave(); return; }
     if (!state.me || !['admin','directiva'].includes(state.me.rol)) {
         root.innerHTML = viewLogin('Tu usuario no está vinculado a un socio con rol admin/directiva. Revisa el bootstrap del primer admin en schema.sql.');
         return;
@@ -1657,8 +1692,10 @@ async function onSession(session) {
 async function init() {
     if (!CONFIG_OK) { state.loading = false; render(); return; }
     const { data } = await sb.auth.getSession();
+    if (data.session && (TIPO_LINK === 'invite' || TIPO_LINK === 'recovery')) state.definirClave = true;
     await onSession(data.session);
     sb.auth.onAuthStateChange((ev, session) => {
+        if (ev === 'PASSWORD_RECOVERY') { state.session = session; state.definirClave = true; render(); return; }
         // Evita recargas cuando Supabase re-emite SIGNED_IN para el mismo usuario (refresh de token / foco)
         if (ev === 'SIGNED_OUT' || (ev === 'SIGNED_IN' && session?.user?.id !== state.session?.user?.id)) onSession(session);
     });
