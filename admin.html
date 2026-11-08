@@ -1575,7 +1575,10 @@ function render() {
         root.innerHTML = viewLogin('Tu usuario no está vinculado a un socio con rol admin/directiva. Revisa el bootstrap del primer admin en schema.sql.');
         return;
     }
-    const tabs = [['dashboard','Dashboard'], ['metas','Metas y Auspicios'], ['cartola','Subir cartola'], ['conciliacion','Conciliación'], ['estado','Estado de cuotas'], ['socios','Socios']];
+    const ro = soloLectura();
+    if (ro && state.tab === 'cartola') state.tab = 'dashboard';
+    const tabs = [['dashboard','Dashboard'], ['metas','Metas y Auspicios'], ['cartola','Subir cartola'], ['conciliacion','Conciliación'], ['estado','Estado de cuotas'], ['socios','Socios']]
+        .filter(([k]) => !(ro && k === 'cartola'));
     const body = { dashboard: viewDashboard, metas: viewMetas, cartola: viewCartola, conciliacion: viewConciliacion, estado: viewEstado, socios: viewSocios }[state.tab]();
     root.innerHTML = `<div class="min-h-screen">
       <div class="sticky top-0 z-40" style="background:var(--navy)">
@@ -1593,12 +1596,36 @@ function render() {
           </div>
         </div>
       </div>
+      ${ro ? `<div class="bg-sky-50 border-b border-sky-200 text-sky-800 text-[11px] font-bold text-center px-3 py-1.5">👁 Modo consulta · los cambios los registra solo tesorería</div>` : ''}
       <div class="max-w-[1700px] mx-auto px-2 sm:px-4 py-4">${body}</div>
       ${viewModal()}
       ${state.busy ? `<div class="fixed inset-0 bg-slate-900/30 z-50 flex items-center justify-center"><div class="card px-5 py-4 flex items-center gap-3">
         <div class="w-5 h-5 border-2 border-slate-200 rounded-full sp" style="border-top-color:var(--navy)"></div><span class="text-sm font-medium text-slate-700">${esc(state.busy)}</span></div></div>` : ''}
     </div>`;
+    if (ro) aplicarSoloLectura(root);
 }
+
+// ============================================================
+// MODO CONSULTA (rol directiva). La protección real es RLS (v5);
+// esto solo oculta los controles que escribirían.
+// ============================================================
+const ACCIONES_ESCRITURA = /abrirModal|enviarRecordatorio|import\w+Sheet|importSheetTxs|delRow|rematchSinAsignar|recalcularAperturas|eliminarModal|guardarModal|confirmarTx|commitPreview|aprobarAperturas|editSocio|saveSocio|addNovedad|addAlias|setSocio|setSubcat|setAuspiciador|setSaldoApertura|onFileSelected/;
+function soloLectura() { return state.me?.rol !== 'admin'; }
+function aplicarSoloLectura(root) {
+    root.querySelectorAll('[onclick],[onchange],[onsubmit]').forEach(el => {
+        const h = (el.getAttribute('onclick') || '') + (el.getAttribute('onchange') || '') + (el.getAttribute('onsubmit') || '');
+        if (!ACCIONES_ESCRITURA.test(h)) return;
+        if (el.tagName === 'SELECT' || el.tagName === 'INPUT') { el.disabled = true; el.classList.add('opacity-60'); }
+        else el.style.display = 'none';
+    });
+}
+// Bloqueo adicional en JS: si alguien llama una acción desde la consola
+['enviarRecordatorio','importSheetTxs','importSociosSheet','importNovedadesSheet','delRow','rematchSinAsignar','recalcularAperturas',
+ 'eliminarModal','guardarModal','confirmarTx','commitPreview','aprobarAperturas','saveSocio','addNovedad','addAlias',
+ 'setSocio','setSubcat','setAuspiciador','setSaldoApertura'].forEach(n => {
+    const f = window[n]; if (typeof f !== 'function') return;
+    window[n] = function (...a) { if (soloLectura()) { toast('Modo consulta: solo tesorería puede modificar datos.', 'warn'); a[0]?.preventDefault?.(); return; } return f.apply(this, a); };
+});
 
 function setState(patch) { Object.assign(state, patch); render(); }
 function setCf(k, v) { state.cf[k] = v; if (k !== 'page') state.cf.page = 0; else state.cf.page = parseInt(v); render(); }
