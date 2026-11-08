@@ -146,6 +146,7 @@ function render() {
           return `<div class="text-center">${u ? `<a href="${esc(u)}" target="_blank" rel="noopener">${inner}</a>` : inner}<p class="text-[9px] uppercase tracking-wider text-slate-400 mt-1">${NIVELES[a.nivel] || ''}</p></div>`; }).join('')}</div></section>` : ''}
 
       <p class="text-[10px] text-slate-400 text-center">Actualizado ${new Date(d.actualizado).toLocaleString('es-CL')} · Fuente: cartolas BancoEstado conciliadas por la tesorería.</p>
+      <p class="text-center mt-1"><a href="admin.html" class="text-[10px] text-slate-400 hover:text-slate-600 underline">Acceso directiva</a></p>
     </main>`;
 }
 cargar();
