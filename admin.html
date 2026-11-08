@@ -1,0 +1,1642 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Conciliación Bancaria · Club Ciclista Santiago Pista</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root { --navy:#1e293b; --orange:#E8572A; --bg:#F1F5F9; }
+  body { background:var(--bg); font-family:'DM Sans',system-ui,sans-serif; margin:0; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .scr { -webkit-overflow-scrolling: touch; }
+  .scr::-webkit-scrollbar { width:5px; height:6px; }
+  .scr::-webkit-scrollbar-thumb { background:#cbd5e1; border-radius:10px; }
+  .hm-paid{background:#D1FAE5;color:#065F46}.hm-unpaid{background:#FEE2E2;color:#991B1B}
+  .hm-na{background:#EFF6FF;color:#93C5FD}.hm-future{background:#F8FAFC;color:#CBD5E1}
+  .hm-exc{background:#FEF3C7;color:#92400E}.hm-susp{background:#e2e8f0;color:#475569}
+  .sticky-col{position:sticky;left:0;z-index:5;background:#fff}
+  thead .sticky-col{z-index:15}
+  @media (max-width:640px){ .inp{font-size:16px !important} } /* evita zoom automático en iOS */
+  .inp{border:1px solid #cbd5e1;border-radius:.5rem;padding:.35rem .6rem;font-size:12px;background:#fff;outline:none}
+  .inp:focus{border-color:var(--navy)}
+  .btn{border-radius:.5rem;padding:.4rem .8rem;font-size:12px;font-weight:700;cursor:pointer}
+  .btn-p{background:var(--navy);color:#fff}.btn-p:hover{opacity:.9}
+  .btn-o{background:var(--orange);color:#fff}
+  .btn-g{background:#fff;border:1px solid #cbd5e1;color:#334155}.btn-g:hover{background:#f8fafc}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .card{background:#fff;border:1px solid #e2e8f0;border-radius:.75rem;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  @keyframes spin{to{transform:rotate(360deg)}} .sp{animation:spin .8s linear infinite}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="toast" class="fixed bottom-4 right-4 z-50"></div>
+
+<script>
+// ============================================================
+// CONFIGURACIÓN — reemplazar con los datos del proyecto Supabase
+// (Project Settings > API). La anon key es pública; la seguridad
+// la impone Row Level Security en la base de datos.
+// ============================================================
+const CONFIG = {
+    SUPABASE_URL: 'https://xnbrkusnmascgkhumyab.supabase.co',
+    SUPABASE_ANON_KEY: 'sb_publishable_Z--e4miwXSirAa7cj87I3A_ZDOwOOgn',
+    SHEETS_BASE: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTti5wNytfqEQj9SKhGO-01aG9MsAfQhnk1UQjxLBZTGd_UoHW4-mEnBvCtbjUfTvGtXfr-NNhgHvRd/pub?single=true&output=csv&gid=',
+    GID: { socios:'113097392', t2026:'530518501', t2025:'627364486', novedades:'297967474' },
+};
+
+const CONFIG_OK = !CONFIG.SUPABASE_URL.includes('TU-PROYECTO');
+const sb = CONFIG_OK ? supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY) : null;
+
+// ============================================================
+// CONSTANTES DE NEGOCIO
+// ============================================================
+const CUOTA_BASE = 17500;
+const CORTE_ABS = 2025 * 12 + 1;               // enero 2025 (inicio de datos históricos)
+// Control FIFO desde enero 2026. Todo 2025 se resume en el saldo de apertura al 31/12/2025
+// (tabla saldos_apertura), aprobado por la directiva. Misma regla que la vista SQL estado_cuenta_socio.
+const CONTROL_ABS = 2026 * 12 + 1;
+const INICIO_CONTROL = '2026-01-01';
+const DIA_EXIGIBLE = 24;                       // mes en curso exigible desde el día 24
+const SCORE_MIN = 30;
+const WORD_SPLIT = /[\s_\-\.:;]+/;
+const STOP_WORDS = ["que","del","los","las","por","con","sin","tef","cta","cct","bco","trf","spa","ltda","limitada","pago","cuota","mes","mensualidad","transferencia","abono","de","la","traspaso","aporte","khipu","fintoc","transf","banco","estado","bancoestado","fondos","internet","desde"];
+// Montos que se consideran cuota "estándar" (múltiplos de media cuota): se auto-confirman.
+// Cualquier otro monto con socio identificado queda POR REVISAR (puede ser cuota + extra, licencia, rifa...).
+const MULTIPLO_CUOTA = 8750;
+const RE_SALIDA = /(SUSPENDID|DESVINCULAD|RETIRAD|INACTIVO|RENUNCIA)/i;
+const ESTADOS = ['ACTIVO','SUSPENDIDO','RETIRADO','RENUNCIA','DESVINCULADO','BECADO'];
+const SUBCATS = ['CUOTA','AUSPICIO','ARRIENDO','DONACION','OTROS'];
+const TIPOS_NOV = [{t:'Congelado',f:0},{t:'Beca 50%',f:0.5},{t:'Beca 100%',f:0}];
+// Alias heredados del dashboard (se cargan a la tabla alias_socio al importar socios)
+const LEGACY_ALIASES = {
+    "armijo churkovic": ["armijo jimenez"],
+    "calfuleo": ["christian calfuleo","calfuleo ramirez","matias calfuleo","christian alejandro calfuleo"],
+};
+const MS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+const MFULL = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+// ============================================================
+// ESTADO
+// ============================================================
+const state = {
+    session: null, me: null, loading: true, busy: '',
+    tab: 'dashboard', dy: String(Math.max(2026, new Date().getFullYear())), dm: 'TODOS', modal: null, metas: [], auspiciadores: [],
+    socios: [], aliases: [], novs: [], txs: [], aperturas: [], cartolas: [], actaApertura: '',
+    preview: null,                       // resultado de parseo antes de confirmar
+    cf: { estado:'REVISAR', tipo:'INGRESO', q:'', mes:'TODOS', page:0 },   // filtros conciliación
+    yf: String(Math.max(2026, new Date().getFullYear())), sf: 'ACTIVO', hq: '',          // filtros mapa
+    editSocio: null,
+};
+
+// ============================================================
+// UTILIDADES
+// ============================================================
+const pad = n => String(n).padStart(2,'0');
+const unaccent = s => s == null ? '' : String(s).normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
+const nh = h => unaccent(h).replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = v => new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',maximumFractionDigits:0}).format(v || 0);
+const absM = (y,m) => parseInt(y)*12 + parseInt(m);
+const absFromISO = iso => iso ? absM(iso.slice(0,4), iso.slice(5,7)) : null;
+
+// Monto: "$17.500", "17.500,00", 17500 → 17500 (siempre positivo)
+const cn = v => {
+    if (v == null || v === '') return 0;
+    if (typeof v === 'number') return Math.abs(Math.round(v));
+    const s = String(v).trim(); if (!s || s === '-' || s === '$') return 0;
+    const n = Number(s.split(',')[0].replace(/[^0-9]/g,''));
+    return isNaN(n) ? 0 : n;
+};
+const cnSigned = v => {
+    if (v == null || v === '') return null;
+    if (typeof v === 'number') return Math.round(v);
+    const s = String(v).trim(); if (!s || s === '-' || s === '$') return null;
+    const neg = /^\s*-|^\s*\(|-\s*$/.test(s);
+    const n = cn(s); return neg ? -n : n;
+};
+
+const validDate = (y,m,d) => { y=+y; m=+m; d=+d; if (y<2000||y>2100||m<1||m>12||d<1||d>31) return null; return `${y}-${pad(m)}-${pad(d)}`; };
+function toISO(v) {
+    if (v == null || v === '') return null;
+    if (v instanceof Date) { if (isNaN(v)) return null; const d = new Date(v.getTime() + 12*3600e3); return validDate(d.getFullYear(), d.getMonth()+1, d.getDate()); }
+    if (typeof v === 'number') {
+        if (v > 20000 && v < 80000) { const d = new Date(Math.round((v - 25569) * 864e5)); return validDate(d.getUTCFullYear(), d.getUTCMonth()+1, d.getUTCDate()); }
+        return null;
+    }
+    const s = String(v).trim().split(/[ T]/)[0]; let m;
+    if ((m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})$/))) return validDate(m[1], m[2], m[3]);
+    if ((m = s.match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{2,4})$/))) { let y = m[3]; if (y.length === 2) y = '20' + y; return validDate(y, m[2], m[1]); }
+    return null;
+}
+
+const normRut = r => { const c = String(r || '').replace(/[^0-9kK]/g,'').toUpperCase(); return c.length < 2 ? '' : `${c.slice(0,-1)}-${c.slice(-1)}`; };
+const isSalida = estado => RE_SALIDA.test(estado || '');
+// Teléfono chileno a formato WhatsApp 569XXXXXXXX
+const normTel = t => { let d = String(t || '').replace(/\D/g, ''); if (d.length === 9 && d[0] === '9') d = '56' + d; return /^569\d{8}$/.test(d) ? d : null; };
+
+function classCat(cat, desc) {
+    const u = unaccent(cat).toUpperCase(), d = unaccent(desc).toUpperCase();
+    const otros = /TRICOTA|INDUMENTARIA|LICENCIA|ROPA|CALZA|INSCRIPCION|SEGURO|EVENTO/;
+    if (otros.test(d) || otros.test(u)) return 'OTROS';
+    if (/CUOTA|MENSUALIDAD/.test(u)) return 'CUOTA';
+    if (/ARRIENDO|VELO|PISTA/.test(u)) return 'ARRIENDO';
+    if (/DONACION/.test(u)) return 'DONACION';
+    if (/AUSPICI|PATROCIN|SPONSOR/.test(u)) return 'AUSPICIO';
+    return 'OTROS';
+}
+// Clasificación + estado de revisión.
+//  - Con columna Categoría (Sheets): manda la categoría; conciliado si hay socio o no es cuota.
+//  - Cartola cruda BancoEstado: socio identificado + monto múltiplo de $8.750 → CUOTA confirmada;
+//    socio identificado + otro monto → CUOTA por revisar; sin socio → OTROS por revisar.
+function clasificar(tx, socioId) {
+    if (tx.tipo === 'EGRESO') return { subcategoria:'EGRESO', conciliado:true };
+    if (tx.categoria) {
+        const sc = classCat(tx.categoria, tx.descripcion);
+        return { subcategoria: sc, conciliado: sc !== 'CUOTA' || !!socioId };
+    }
+    const d = unaccent(tx.descripcion);
+    if (/tricota|indumentaria|licencia|inscripcion|seguro|evento|calza/.test(d)) return { subcategoria:'OTROS', conciliado:false };
+    if (/arriendo/.test(d)) return { subcategoria:'ARRIENDO', conciliado:false };
+    if (/donacion/.test(d)) return { subcategoria:'DONACION', conciliado:false };
+    if (socioId) return { subcategoria:'CUOTA', conciliado: tx.monto % MULTIPLO_CUOTA === 0 };
+    return { subcategoria:'OTROS', conciliado:false };
+}
+
+function toast(text, type='ok') {
+    const el = document.getElementById('toast');
+    const cls = type === 'err' ? 'bg-rose-600' : type === 'warn' ? 'bg-amber-500' : 'bg-emerald-600';
+    el.innerHTML = `<div class="${cls} text-white text-xs font-bold px-4 py-3 rounded-xl shadow-lg max-w-sm">${esc(text)}</div>`;
+    clearTimeout(toast._t); toast._t = setTimeout(() => el.innerHTML = '', type === 'err' ? 8000 : 4000);
+}
+async function withBusy(label, fn) {
+    state.busy = label; render();
+    try { return await fn(); }
+    catch (e) { console.error(e); toast(`Error: ${e.message || e}`, 'err'); }
+    finally { state.busy = ''; render(); }
+}
+const chunk = (arr, n) => { const o = []; for (let i = 0; i < arr.length; i += n) o.push(arr.slice(i, i + n)); return o; };
+
+// ============================================================
+// SUPABASE: carga de datos (paginada, PostgREST limita a 1000)
+// ============================================================
+async function fetchAll(table, select='*', order='id') {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+        const { data, error } = await sb.from(table).select(select).order(order).range(from, from + 999);
+        if (error) throw error;
+        out.push(...data);
+        if (data.length < 1000) break;
+    }
+    return out;
+}
+async function loadAll() {
+    const [socios, aliases, novs, txs, aperturas, metas, auspiciadores, recordatorios] = await Promise.all([
+        fetchAll('socios'), fetchAll('alias_socio'), fetchAll('novedades'), fetchAll('transacciones_banco'),
+        fetchAll('saldos_apertura', '*', 'socio_id'), fetchAll('metas'), fetchAll('auspiciadores'), fetchAll('recordatorios'),
+    ]);
+    const { data: cartolas } = await sb.from('cartolas').select('*').order('created_at', { ascending:false }).limit(1000);
+    const { data: config } = await sb.from('config_club').select('*').eq('id', 1).maybeSingle();
+    Object.assign(state, { socios, aliases, novs, txs, aperturas, metas, auspiciadores, recordatorios, config, cartolas: cartolas || [] });
+}
+
+// ============================================================
+// PARSER DE CARTOLAS (CSV / XLS / XLSX de BancoEstado o Sheets)
+// Detecta la fila de encabezado y mapea columnas por alias.
+// ============================================================
+const COLS = {
+    fecha:    ['fecha','fecha_movimiento','fecha_operacion'],
+    desc:     ['descripcion','detalle','glosa','descripcion_movimiento'],
+    sucursal: ['sucursal','canal_o_sucursal','canal'],
+    nop:      ['n_operacion','no_operacion','nro_operacion','operacion','n_documento','documento'],
+    cargo:    ['cheques_cargos','cargos_clp','cargos','cargo','cheques','giros'],
+    abono:    ['depositos_abonos','abonos_clp','abonos','abono','depositos'],
+    monto:    ['monto','importe'],
+    saldo:    ['saldo_clp','saldo','saldo_diario'],
+    categoria:['categoria','clasificacion'],
+};
+function mapCols(hdr) {
+    const H = (hdr || []).map(nh), idx = {}, used = new Set();
+    for (const [k, cands] of Object.entries(COLS)) {
+        let f = -1;
+        for (const c of cands) { f = H.findIndex((h,i) => h === c && !used.has(i)); if (f >= 0) break; }
+        if (f < 0) for (const c of cands) { f = H.findIndex((h,i) => h.startsWith(c) && !used.has(i)); if (f >= 0) break; }
+        idx[k] = f; if (f >= 0) used.add(f);
+    }
+    return idx;
+}
+function detectHeader(rows) {
+    for (let i = 0; i < Math.min(40, rows.length); i++) {
+        const idx = mapCols(rows[i]);
+        if (idx.fecha >= 0 && idx.desc >= 0 && (idx.abono >= 0 || idx.monto >= 0)) return i;
+    }
+    return -1;
+}
+// Metadatos de la hoja "Resumen" de la cartola histórica (etiqueta en una celda, valor en la siguiente no vacía)
+const META_KEYS = {
+    fecha_inicio:'inicio', fecha_final:'final', fecha_emision:'emision', n_cartola:'nCartola', n_movimientos:'nMov',
+    saldo_inicial:'saldoInicial', saldo_final:'saldoFinal', total_cargos:'totCargos', total_cheques:'totCheques',
+    total_abonos:'totAbonos', total_depositos:'totDepositos', n_cuenta:'cuenta',
+};
+function extractMeta(sheets) {
+    const meta = {};
+    for (const rows of sheets) for (const row of rows) {
+        if (!row) continue;
+        for (let c = 0; c < row.length; c++) {
+            const key = META_KEYS[nh(row[c])];
+            if (!key || meta[key] != null) continue;
+            const val = row.slice(c + 1).find(v => String(v ?? '').trim() !== '');
+            if (val == null) continue;
+            if (['inicio','final','emision'].includes(key)) meta[key] = toISO(val);
+            else if (key.startsWith('saldo') || key.startsWith('tot')) meta[key] = cnSigned(val);
+            else meta[key] = String(val).trim();
+        }
+    }
+    return meta;
+}
+// BancoEstado entrega la fecha como "dd/mm" sin año: se infiere con la Fecha Final del periodo
+// (si dd/mm cae después de la fecha final, pertenece al año anterior → cartolas dic/ene).
+function fechaConAnio(v, meta) {
+    const iso = toISO(v); if (iso) return iso;
+    const m = String(v ?? '').trim().match(/^(\d{1,2})[\/\-.](\d{1,2})$/);
+    if (!m) return null;
+    const ref = meta.final || meta.emision || `${new Date().getFullYear()}-12-31`;
+    let y = parseInt(ref.slice(0, 4));
+    let f = validDate(y, m[2], m[1]);
+    if (f && f > ref) f = validDate(y - 1, m[2], m[1]);
+    return f;
+}
+// Cuadratura: encadenamiento de saldos fila a fila y contra los totales del Resumen.
+function cuadratura(txs, meta) {
+    const signo = t => t.tipo === 'INGRESO' ? t.monto : -t.monto;
+    const res = { quiebres: 0, conSaldo: txs.every(t => t.saldo != null), checks: [] };
+    if (!txs.length || !res.conSaldo) return res;
+    for (let i = 1; i < txs.length; i++) if (txs[i-1].saldo + signo(txs[i]) !== txs[i].saldo) res.quiebres++;
+    res.saldoPrevio = txs[0].saldo - signo(txs[0]);
+    res.saldoFinal = txs[txs.length - 1].saldo;
+    const sumAb = txs.filter(t => t.tipo === 'INGRESO').reduce((a, t) => a + t.monto, 0);
+    const sumCa = txs.filter(t => t.tipo === 'EGRESO').reduce((a, t) => a + t.monto, 0);
+    const chk = (label, esperado, real) => { if (esperado != null) res.checks.push({ label, ok: esperado === real, esperado, real }); };
+    chk('Saldo inicial', meta.saldoInicial, res.saldoPrevio);
+    chk('Saldo final', meta.saldoFinal, res.saldoFinal);
+    chk('Total abonos', meta.totAbonos != null ? meta.totAbonos + (meta.totDepositos || 0) : null, sumAb);
+    chk('Total cargos', meta.totCargos != null ? meta.totCargos + (meta.totCheques || 0) : null, sumCa);
+    chk('N° movimientos', meta.nMov != null ? parseInt(meta.nMov) : null, txs.length);
+    return res;
+}
+function rowsToTxs(rows, meta = {}) {
+    const hi = detectHeader(rows);
+    if (hi < 0) throw new Error('No encontré la fila de encabezados (se necesitan columnas Fecha, Descripción y Abonos/Depósitos o Monto).');
+    const idx = mapCols(rows[hi]);
+    const out = [], seen = {}; let descartadas = 0;
+    for (let r = hi + 1; r < rows.length; r++) {
+        const row = rows[r]; if (!row || !row.length) continue;
+        const g = k => idx[k] >= 0 ? row[idx[k]] : '';
+        const fecha = fechaConAnio(g('fecha'), meta);
+        if (!fecha) { if (row.some(c => String(c ?? '').trim() !== '')) descartadas++; continue; }
+        let abono = cn(g('abono')), cargo = cn(g('cargo'));
+        if (idx.abono < 0 && idx.monto >= 0) {
+            const raw = g('monto'), v = cnSigned(raw);
+            if (v < 0) cargo = -v; else abono = v || 0;
+        }
+        let tipo, monto;
+        if (abono > 0) { tipo = 'INGRESO'; monto = abono; }
+        else if (cargo > 0) { tipo = 'EGRESO'; monto = cargo; }
+        else { descartadas++; continue; }
+        const descripcion = String(g('desc') ?? '').trim();
+        const saldo = cnSigned(g('saldo'));
+        const categoria = String(g('categoria') ?? '').trim() || null;
+        // Clave de deduplicación: el saldo post-movimiento identifica la fila de forma estable
+        // entre archivos solapados; sin saldo se usa la descripción. El correlativo (#n)
+        // distingue movimientos idénticos el mismo día.
+        const base = saldo != null
+            ? `${fecha}|${tipo}|${monto}|S${saldo}`
+            : `${fecha}|${tipo}|${monto}|D${unaccent(descripcion).replace(/\s+/g,' ').trim()}`;
+        seen[base] = (seen[base] || 0) + 1;
+        out.push({
+            fecha, descripcion, tipo, monto, saldo, categoria,
+            sucursal: String(g('sucursal') ?? '').trim() || null,
+            n_operacion: String(g('nop') ?? '').trim() || null,
+            hash_unico: `${base}#${seen[base]}`,
+        });
+    }
+    return { txs: out, header: rows[hi], idx, descartadas, cuad: cuadratura(out, meta) };
+}
+// Lee CSV/XLS/XLSX. En la cartola histórica de BancoEstado los movimientos están en la hoja
+// "Movimientos" y los totales en "Resumen": se recorren todas las hojas.
+async function readFileSheets(file) {
+    const name = file.name.toLowerCase();
+    if (name.endsWith('.pdf')) throw new Error('El PDF no se puede procesar: descarga la cartola en formato Excel (ícono verde XLS).');
+    if (name.endsWith('.csv') || name.endsWith('.txt')) {
+        const rows = await new Promise((res, rej) => Papa.parse(file, { header:false, skipEmptyLines:'greedy', complete: x => res(x.data), error: rej }));
+        return [rows];
+    }
+    const buf = await file.arrayBuffer();
+    const wb = XLSX.read(buf, { type:'array', cellDates:true });
+    return wb.SheetNames.map(n => XLSX.utils.sheet_to_json(wb.Sheets[n], { header:1, raw:true, defval:'' }));
+}
+function parseSheets(sheets, metaExtra = {}) {
+    const meta = { ...extractMeta(sheets), ...metaExtra };
+    const mov = sheets.find(rows => detectHeader(rows) >= 0);
+    if (!mov) throw new Error('No encontré la tabla de movimientos en ninguna hoja del archivo.');
+    return { ...rowsToTxs(mov, meta), meta };
+}
+const csvFromUrl = (url, header=false) => new Promise((res, rej) =>
+    Papa.parse(url, { download:true, header, skipEmptyLines:'greedy', transformHeader: h => h.trim(), complete: x => res(x.data), error: rej }));
+
+// ============================================================
+// MOTOR DE MATCHING (scoring ponderado + asignación exclusiva)
+//  100 = RUT en la glosa · 95 = alias conocido · 30-90 = nombre
+//  ponderado por unicidad de palabra · empate en el máximo => manual
+// ============================================================
+// Nombre del titular que transfiere, tal como lo escribe el banco en la glosa:
+//   "TEF DE PAINEQUEO HERRERA CARLOS SAL" · "TEF BANCOESTADO DE VEGA CESPED REN" · "TRASPASO DE:Matias Soto"
+// (las TEF salientes "TEF A ..." no son pagos de socios y se ignoran)
+const RE_PAYER = /^\s*(?:tef\s+(?:bancoestado\s+)?de|traspaso\s+de|transferencia\s+desde|transferencia\s+de)\s*[:\s]\s*/;
+function extractPayer(desc) {
+    const d = unaccent(desc).replace(/\s+/g, ' ').trim();
+    const m = d.match(RE_PAYER);
+    return m ? d.slice(m[0].length).replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim() : '';
+}
+// Alias normalizado: si viene con prefijo bancario (ej. columna Nombre_Banco "TEF DE ..."), se deja solo el nombre
+const normAlias = a => { const p = extractPayer(a); return (p || unaccent(a).replace(/[^a-z0-9 ]/g, ' ')).replace(/\s+/g, ' ').trim(); };
+
+function buildMatchCtx() {
+    const wordFreq = {};
+    const items = state.socios.map(s => {
+        const words = unaccent(s.nombre).split(WORD_SPLIT).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
+        words.forEach(w => wordFreq[w] = (wordFreq[w] || 0) + 1);
+        return {
+            id: s.id, words,
+            rut: String(s.rut || '').replace(/[^0-9kK]/g,'').toLowerCase(),
+            als: state.aliases.filter(a => a.socio_id === s.id).map(a => normAlias(a.alias)).filter(a => a.length >= 4),
+        };
+    });
+    return { items, wordFreq };
+}
+function matchTx(tx, ctx) {
+    const txText = unaccent(tx.descripcion);
+    const txNum = txText.replace(/[^0-9k]/g,'');
+    const txWords = txText.split(WORD_SPLIT).filter(w => w.length > 2 && !STOP_WORDS.includes(w));
+    const payer = extractPayer(tx.descripcion);
+    const txFlat = txText.replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ');
+    // Alias: aparece en la glosa, o la glosa (truncada a ~35 caracteres por BancoEstado) es el inicio del alias
+    const aliasHit = a => txFlat.includes(a) || (payer.length >= 15 && a.startsWith(payer));
+    let best = { sid:null, sc:0 }, second = 0;
+    for (const it of ctx.items) {
+        let sc = 0;
+        if (it.rut.length >= 7) {
+            const base = it.rut.slice(0,-1);
+            if (txNum.includes(it.rut) || (base.length >= 7 && txNum.includes(base))) sc = 100;
+        }
+        if (!sc && it.als.some(aliasHit)) sc = 95;
+        if (!sc && it.words.length) {
+            let wScore = 0, matched = 0;
+            for (const nw of it.words) {
+                const hit = txWords.some(tw => nw === tw || (nw.length >= 4 && tw.length >= 4 && (nw.startsWith(tw) || tw.startsWith(nw))));
+                if (hit) { matched++; wScore += 1 / (ctx.wordFreq[nw] || 1); }
+            }
+            if (matched >= 2) {
+                const cov = matched / it.words.length;
+                sc = Math.round(cov * 45 + Math.min(wScore / it.words.length, 1) * 45);
+            }
+        }
+        if (sc > best.sc) { second = best.sc; best = { sid: it.id, sc }; }
+        else if (sc > second) second = sc;
+    }
+    if (best.sc < SCORE_MIN) return { sid:null, sc:best.sc, motivo:'SIN_MATCH' };
+    if (second === best.sc) return { sid:null, sc:best.sc, motivo:'EMPATE' };
+    return { sid: best.sid, sc: best.sc, motivo:'OK' };
+}
+// Enriquece filas parseadas con matching + clasificación
+function enrich(txs) {
+    const ctx = buildMatchCtx();
+    return txs.map(t => {
+        const auspId = matchAuspiciador(t);
+        if (auspId) return { ...t, socio_id: null, auspiciador_id: auspId, score_matching: 95, asignacion: 'AUTO', conciliado: true, subcategoria: 'AUSPICIO', _motivo: 'AUSPICIO' };
+        const m = t.tipo === 'INGRESO' ? matchTx(t, ctx) : { sid:null, sc:null, motivo:'EGRESO' };
+        const c = clasificar(t, m.sid);
+        return { ...t, auspiciador_id: null, socio_id: m.sid, score_matching: m.sc, asignacion: m.sid ? 'AUTO' : null,
+                 conciliado: c.conciliado, subcategoria: c.subcategoria, _motivo: m.motivo };
+    });
+}
+
+// ============================================================
+// IMPORTACIÓN DE CARTOLAS (uno o varios archivos a la vez)
+// ============================================================
+async function onFileSelected(input) {
+    const files = [...(input.files || [])]; if (!files.length) return;
+    await withBusy(`Leyendo ${files.length} archivo(s)...`, async () => {
+        const lotes = [];
+        for (const file of files) {
+            const parsed = parseSheets(await readFileSheets(file));
+            lotes.push({ nombre: file.name, origen:'ARCHIVO', file, parsed });
+        }
+        buildPreview(lotes);
+    });
+    input.value = '';
+}
+async function importSheetTxs(year) {
+    await withBusy(`Descargando hoja ${year} desde Google Sheets...`, async () => {
+        const rows = await csvFromUrl(CONFIG.SHEETS_BASE + (year === '2025' ? CONFIG.GID.t2025 : CONFIG.GID.t2026));
+        // La hoja puede traer fechas dd/mm sin año: se asume el año de la hoja
+        const parsed = parseSheets([rows], { final: `${year}-12-31` });
+        buildPreview([{ nombre: `Google Sheets ${year}`, origen: `SHEETS_${year}`, file: null, parsed }]);
+    });
+}
+function buildPreview(lotes) {
+    if (!state.socios.length) toast('No hay socios cargados: el matching no asignará nada. Importa el padrón primero.', 'warn');
+    const existentes = new Set(state.txs.map(t => t.hash_unico));
+    const saldosDB = new Set(state.txs.filter(t => t.saldo != null).map(t => Number(t.saldo)));
+    const firmaDB = new Map();     // fecha|tipo|monto → n, para detectar posibles duplicados con hash distinto
+    state.txs.forEach(t => { const k = `${t.fecha}|${t.tipo}|${t.monto}`; firmaDB.set(k, (firmaDB.get(k) || 0) + 1); });
+    const vistos = new Set();
+    lotes.forEach(l => {
+        l.rows = enrich(l.parsed.txs).map(r => {
+            r._dup = existentes.has(r.hash_unico) || vistos.has(r.hash_unico);
+            r._posDup = !r._dup && firmaDB.has(`${r.fecha}|${r.tipo}|${r.monto}`) && r.saldo == null;
+            vistos.add(r.hash_unico);
+            return r;
+        });
+        const f = l.rows.map(r => r.fecha).sort();
+        l.periodo = f.length ? `${f[0]} a ${f[f.length - 1]}` : '';
+        const c = l.parsed.cuad;
+        // Continuidad: el saldo previo al primer movimiento debe existir en la base (salvo base vacía)
+        const primera = [...l.parsed.txs].sort((a, b) => a.fecha.localeCompare(b.fecha))[0];
+        const hayAnteriores = primera && state.txs.some(t => t.fecha < primera.fecha);
+        l.continuidad = c.saldoPrevio == null ? null
+            : saldosDB.size === 0 ? 'BASE_VACIA'
+            : l.rows.every(r => r._dup) ? null
+            : !hayAnteriores ? 'INICIO'
+            : saldosDB.has(c.saldoPrevio) ? 'OK' : 'HUECO';
+    });
+    state.preview = { lotes, rows: lotes.flatMap(l => l.rows) };
+    state.tab = 'cartola';
+}
+async function commitPreview() {
+    const p = state.preview; if (!p) return;
+    await withBusy('Guardando movimientos...', async () => {
+        const tot = { nuevas:0, dup:0, match:0 };
+        for (const l of p.lotes) {
+            const { data: cart, error: e1 } = await sb.from('cartolas').insert({
+                nombre_archivo: l.nombre + (l.parsed.meta.nCartola ? ` (N° ${l.parsed.meta.nCartola})` : ''),
+                origen: l.origen, periodo: l.periodo, filas_procesadas: l.rows.length, subido_por: state.me?.id || null,
+            }).select().single();
+            if (e1) throw e1;
+            if (l.file) {
+                const path = `${new Date().toISOString().slice(0,10)}/${Date.now()}_${l.file.name.replace(/[^\w.\-]/g,'_')}`;
+                const { error: eu } = await sb.storage.from('cartolas').upload(path, l.file);
+                if (!eu) await sb.from('cartolas').update({ archivo_url: path }).eq('id', cart.id);
+                else console.warn('Storage:', eu.message);
+            }
+            const clean = l.rows.map(r => ({
+                fecha: r.fecha, descripcion: r.descripcion, sucursal: r.sucursal, n_operacion: r.n_operacion,
+                monto: r.monto, tipo: r.tipo, categoria: r.categoria, subcategoria: r.subcategoria, saldo: r.saldo,
+                socio_id: r.socio_id, score_matching: r.score_matching, asignacion: r.asignacion,
+                conciliado: r.conciliado, hash_unico: r.hash_unico, cartola_id: cart.id, auspiciador_id: r.auspiciador_id || null,
+            }));
+            const nuevas = [];
+            for (const c of chunk(clean, 500)) {
+                // ignoreDuplicates: filas ya importadas (y sus asignaciones manuales) no se tocan
+                const { data, error } = await sb.from('transacciones_banco')
+                    .upsert(c, { onConflict:'hash_unico', ignoreDuplicates:true }).select('id,socio_id');
+                if (error) throw error;
+                nuevas.push(...(data || []));
+            }
+            const stats = { filas_nuevas: nuevas.length, filas_duplicadas: clean.length - nuevas.length,
+                            filas_matcheadas: nuevas.filter(n => n.socio_id).length };
+            await sb.from('cartolas').update(stats).eq('id', cart.id);
+            tot.nuevas += stats.filas_nuevas; tot.dup += stats.filas_duplicadas; tot.match += stats.filas_matcheadas;
+        }
+        state.preview = null;
+        await loadAll();
+        toast(`Importadas ${tot.nuevas} filas nuevas (${tot.dup} ya existían). Con socio identificado: ${tot.match}.`);
+    });
+}
+
+// ============================================================
+// MIGRACIÓN DESDE GOOGLE SHEETS (padrón y novedades)
+// ============================================================
+const normObj = raw => { const o = {}; for (const k in raw) o[nh(k)] = String(raw[k] ?? '').trim(); return o; };
+const gv = (r, ks) => { for (const k of ks) if (r[k]) return r[k]; return ''; };
+
+async function importSociosSheet() {
+    await withBusy('Importando padrón de socios...', async () => {
+        const data = await csvFromUrl(CONFIG.SHEETS_BASE + CONFIG.GID.socios, true);
+        const sinRut = [], rows = new Map(), nbPorRut = new Map();
+        for (const raw of data) {
+            const r = normObj(raw);
+            const nombre = gv(r, ['nombre_completo','nombre','socio']);
+            if (!nombre || nombre.length <= 2) continue;
+            const rut = normRut(gv(r, ['rut']));
+            if (!rut) { sinRut.push(nombre); continue; }
+            const estado = (gv(r, ['estado_en_el_club','estado','status']) || 'ACTIVO').toUpperCase();
+            const fsal = toISO(gv(r, ['fecha_act_estado','fecha_de_salida','fecha_salida','baja','retiro']));
+            const nb = gv(r, ['nombre_banco','nombre_en_banco','titular_cuenta']);
+            if (nb) nbPorRut.set(rut, nb);
+            rows.set(rut, {
+                rut, nombre, estado,
+                tipo_socio: gv(r, ['tipo_socio','tipo']) || null,
+                fecha_ingreso: toISO(gv(r, ['fecha_de_ingreso','fecha_ingreso','fechaingreso'])),
+                fecha_salida: isSalida(estado) ? fsal : null,
+            });
+        }
+        // upsert por RUT: no toca rol, auth_user_id, email ni cuota de socios existentes
+        for (const c of chunk([...rows.values()], 200)) {
+            const { error } = await sb.from('socios').upsert(c, { onConflict:'rut' });
+            if (error) throw error;
+        }
+        await loadAll();
+        // Alias heredados
+        const al = [];
+        for (const [k, vs] of Object.entries(LEGACY_ALIASES))
+            state.socios.filter(s => unaccent(s.nombre).includes(k)).forEach(s => vs.forEach(a => al.push({ socio_id: s.id, alias: a })));
+        // Columna Nombre_Banco del padrón: nombre con que aparece la transferencia en la cartola
+        state.socios.forEach(s => { const nb = nbPorRut.get(s.rut); if (nb && normAlias(nb).length >= 8) al.push({ socio_id: s.id, alias: normAlias(nb) }); });
+        if (al.length) await sb.from('alias_socio').upsert(al, { onConflict:'socio_id,alias', ignoreDuplicates:true });
+        await loadAll();
+        toast(`Padrón: ${rows.size} socios sincronizados.${sinRut.length ? ` ${sinRut.length} sin RUT omitidos: ${sinRut.slice(0,5).join(', ')}${sinRut.length > 5 ? '…' : ''}` : ''}`, sinRut.length ? 'warn' : 'ok');
+    });
+}
+function factorDeTipo(tipo) {
+    const t = unaccent(tipo).toUpperCase();
+    if (/CONGELA|MONTO.?0/.test(t)) return 0;
+    if (/50/.test(t)) return 0.5;
+    if (/BECA/.test(t)) return 0;
+    return 1;
+}
+async function importNovedadesSheet() {
+    if (!confirm('Esto REEMPLAZA todas las novedades actuales por las de Google Sheets. ¿Continuar?')) return;
+    await withBusy('Importando novedades...', async () => {
+        const data = await csvFromUrl(CONFIG.SHEETS_BASE + CONFIG.GID.novedades, true);
+        const byRut = new Map(state.socios.map(s => [String(s.rut).replace(/[^0-9kK]/g,'').toUpperCase(), s]));
+        const out = [], noMatch = [];
+        for (const raw of data) {
+            const r = normObj(raw);
+            const rutC = gv(r, ['rut']).replace(/[^0-9kK]/g,'').toUpperCase();
+            const nom = gv(r, ['nombre_completo','nombre']);
+            let s = rutC ? byRut.get(rutC) : null;
+            if (!s && nom) s = state.socios.find(x => unaccent(x.nombre) === unaccent(nom));
+            const fi = toISO(gv(r, ['fecha_inicio']));
+            if (!s || !fi) { if (rutC || nom) noMatch.push(nom || rutC); continue; }
+            const tipo = gv(r, ['tipo_de_novedad','tipo_novedad','novedad']) || 'Congelado';
+            out.push({ socio_id: s.id, tipo_novedad: tipo, factor_cuota: factorDeTipo(tipo),
+                       fecha_inicio: fi, fecha_termino: toISO(gv(r, ['fecha_termino','fecha_fin'])) });
+        }
+        const { error: ed } = await sb.from('novedades').delete().gte('id', 0); if (ed) throw ed;
+        if (out.length) { const { error } = await sb.from('novedades').insert(out); if (error) throw error; }
+        await loadAll();
+        toast(`Novedades: ${out.length} cargadas.${noMatch.length ? ` ${noMatch.length} sin socio o sin fecha: ${noMatch.slice(0,4).join(', ')}` : ''}`, noMatch.length ? 'warn' : 'ok');
+    });
+}
+
+// ============================================================
+// CONCILIACIÓN: acciones
+// ============================================================
+async function patchTx(txId, patch) {
+    const { error } = await sb.from('transacciones_banco').update(patch).eq('id', txId);
+    if (error) { toast(error.message, 'err'); return false; }
+    Object.assign(state.txs.find(t => t.id === txId), patch); render(); return true;
+}
+// Asignación manual = decisión humana → queda conciliado
+async function setSocio(txId, val) {
+    const socio_id = val ? parseInt(val) : null;
+    const tx = state.txs.find(t => t.id === txId);
+    const patch = socio_id
+        ? { socio_id, asignacion:'MANUAL', conciliado:true, score_matching:null }
+        : { socio_id:null, asignacion:null, conciliado:false, score_matching:null };
+    if (socio_id && tx.tipo === 'INGRESO' && tx.subcategoria === 'OTROS' && !tx.categoria) patch.subcategoria = 'CUOTA';
+    if (await patchTx(txId, patch) && socio_id) await aprenderAlias(tx, socio_id);
+}
+// Aprendizaje: al asignar a mano, el nombre del titular de la glosa se guarda como alias del socio,
+// así la próxima transferencia de esa misma cuenta se asigna sola (score 95).
+// Si ese titular ya es alias de OTRO socio (ej. un apoderado que paga por dos hijos) no se guarda:
+// ese caso debe seguir siendo manual.
+async function aprenderAlias(tx, socio_id) {
+    const payer = extractPayer(tx.descripcion);
+    const palabras = payer.split(' ').filter(w => w.length > 2 && !STOP_WORDS.includes(w));
+    if (payer.length < 8 || palabras.length < 2) return;
+    const existentes = state.aliases.filter(a => normAlias(a.alias) === payer);
+    if (existentes.some(a => a.socio_id === socio_id)) return;
+    if (existentes.length) { toast(`"${payer}" ya es alias de otro socio: no se aprendió (pagos compartidos quedan manuales).`, 'warn'); return; }
+    const { data, error } = await sb.from('alias_socio').insert({ socio_id, alias: payer }).select().single();
+    if (!error && data) { state.aliases.push(data); toast(`Alias aprendido: "${payer}" → ${socioById(socio_id)?.nombre}`); }
+}
+async function setSubcat(txId, val) {
+    const tx = state.txs.find(t => t.id === txId);
+    // Una CUOTA sin socio no está conciliada; cualquier otra categoría elegida a mano sí
+    if (val === 'AUSPICIO') return patchTx(txId, { subcategoria: val, socio_id: null, asignacion: null, conciliado: !!tx.auspiciador_id });
+    await patchTx(txId, { subcategoria: val, auspiciador_id: null, conciliado: val !== 'CUOTA' || !!tx.socio_id });
+}
+async function confirmarTx(txId) { await patchTx(txId, { conciliado: true }); }
+
+async function rematchSinAsignar() {
+    await withBusy('Re-ejecutando matching sobre ingresos sin socio...', async () => {
+        const ctx = buildMatchCtx();
+        const pend = state.txs.filter(t => t.tipo === 'INGRESO' && !t.socio_id && t.subcategoria !== 'AUSPICIO');
+        const updates = [];
+        for (const t of pend) {
+            const m = matchTx(t, ctx);
+            if (!m.sid) continue;
+            const c = clasificar(t, m.sid);
+            updates.push({ id: t.id, patch: { socio_id: m.sid, score_matching: m.sc, asignacion:'AUTO',
+                subcategoria: c.subcategoria, conciliado: c.conciliado } });
+        }
+        for (const c of chunk(updates, 20))
+            await Promise.all(c.map(u => sb.from('transacciones_banco').update(u.patch).eq('id', u.id)));
+        await loadAll();
+        toast(`${updates.length} de ${pend.length} ingresos sin socio fueron asignados.`);
+    });
+}
+
+// ============================================================
+// SOCIOS / NOVEDADES / ALIAS: CRUD
+// ============================================================
+async function saveSocio(ev) {
+    ev.preventDefault();
+    const f = new FormData(ev.target), v = k => (f.get(k) || '').toString().trim();
+    const rec = {
+        rut: normRut(v('rut')), nombre: v('nombre'), email: v('email') || null, telefono: normTel(v('telefono')), estado: v('estado'),
+        tipo_socio: v('tipo_socio') || null, cuota_mensual: parseInt(v('cuota_mensual')) || 0,
+        fecha_ingreso: v('fecha_ingreso') || null, fecha_salida: v('fecha_salida') || null, rol: v('rol'),
+    };
+    if (!rec.rut || !rec.nombre) return toast('RUT y nombre son obligatorios', 'err');
+    await withBusy('Guardando socio...', async () => {
+        const q = state.editSocio === 'new' ? sb.from('socios').insert(rec) : sb.from('socios').update(rec).eq('id', state.editSocio);
+        const { error } = await q; if (error) throw error;
+        state.editSocio = null; await loadAll(); toast('Socio guardado');
+    });
+}
+async function addNovedad(ev) {
+    ev.preventDefault();
+    const f = new FormData(ev.target), tipo = f.get('tipo');
+    const rec = { socio_id: parseInt(f.get('socio_id')), tipo_novedad: tipo,
+                  factor_cuota: TIPOS_NOV.find(t => t.t === tipo)?.f ?? 1,
+                  fecha_inicio: f.get('fecha_inicio'), fecha_termino: f.get('fecha_termino') || null };
+    if (!rec.socio_id || !rec.fecha_inicio) return toast('Socio y fecha de inicio son obligatorios', 'err');
+    await withBusy('Guardando novedad...', async () => {
+        const { error } = await sb.from('novedades').insert(rec); if (error) throw error;
+        await loadAll(); toast('Novedad agregada');
+    });
+}
+async function delRow(table, id) {
+    if (!confirm('¿Eliminar este registro?')) return;
+    await withBusy('Eliminando...', async () => {
+        const { error } = await sb.from(table).delete().eq('id', id); if (error) throw error;
+        await loadAll();
+    });
+}
+async function addAlias(ev) {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const rec = { socio_id: parseInt(f.get('socio_id')), alias: unaccent(f.get('alias')).trim() };
+    if (!rec.socio_id || rec.alias.length < 4) return toast('Alias de al menos 4 caracteres', 'err');
+    await withBusy('Guardando alias...', async () => {
+        const { error } = await sb.from('alias_socio').insert(rec); if (error) throw error;
+        await loadAll(); toast('Alias agregado. Usa "Re-ejecutar matching" para aplicarlo.');
+    });
+}
+
+// ============================================================
+// FIFO ("llenado de vaso") — misma regla que la vista SQL
+// ============================================================
+function computeEstado() {
+    const hoy = new Date();
+    const curAbs = absM(hoy.getFullYear(), hoy.getMonth() + 1);
+    const lastWeek = hoy.getDate() >= DIA_EXIGIBLE;
+    const maxAbs = absM(Math.max(hoy.getFullYear(), 2026), 12);
+
+    const novBy = new Map();
+    state.novs.forEach(n => {
+        if (!novBy.has(n.socio_id)) novBy.set(n.socio_id, []);
+        novBy.get(n.socio_id).push({ fi: absFromISO(n.fecha_inicio), ft: n.fecha_termino ? absFromISO(n.fecha_termino) : Infinity, f: Number(n.factor_cuota) });
+    });
+    const pagadoBy = new Map();
+    state.txs.forEach(t => {
+        if (t.tipo !== 'INGRESO' || t.subcategoria !== 'CUOTA' || !t.socio_id || t.fecha < INICIO_CONTROL) return;
+        pagadoBy.set(t.socio_id, (pagadoBy.get(t.socio_id) || 0) + t.monto);
+    });
+
+    const aperBy = new Map((state.aperturas || []).map(a => [a.socio_id, a]));
+    return state.socios.map(s => {
+        const ingAbs = s.fecha_ingreso ? absFromISO(s.fecha_ingreso) : CONTROL_ABS;
+        const primer = Math.max(ingAbs, CONTROL_ABS);
+        const susp = isSalida(s.estado);
+        const salidaAbs = susp ? (s.fecha_salida ? absFromISO(s.fecha_salida) : curAbs) : Infinity;
+        const cuotaBase = s.cuota_mensual ?? CUOTA_BASE;
+        const ap = aperBy.get(s.id);
+        const saldoApertura = ap ? Number(ap.saldo) : 0;   // + a favor / - deuda 2025
+        // FIFO: el saldo de apertura entra como "primer pago" (o primera deuda) del vaso
+        const totalPagado = (pagadoBy.get(s.id) || 0) + saldoApertura;
+        const nv = novBy.get(s.id) || [];
+        const monthMap = {};
+        let exig = 0;
+        for (let a = CONTROL_ABS; a <= maxAbs; a++) {
+            if (a < primer) { monthMap[a] = { st:'na', lb:'—' }; continue; }
+            if (susp && a > salidaAbs) { monthMap[a] = { st:'susp', lb:'S' }; continue; }
+            if (a > curAbs) { monthMap[a] = { st:'future', lb:'·' }; continue; }
+            const vig = nv.filter(n => a >= n.fi && a <= n.ft);
+            const factor = vig.length ? Math.min(...vig.map(n => n.f)) : 1;
+            const cuotaMes = Math.round(cuotaBase * factor);
+            const isCur = a === curAbs, req = !(isCur && !lastWeek);
+            if (req) exig += cuotaMes;
+            const meta = req ? exig : exig + cuotaMes;
+            const paid = totalPagado >= meta;
+            const st = paid ? 'paid' : (isCur && !lastWeek ? 'future' : 'unpaid');
+            monthMap[a] = { st, lb: paid ? '✓' : st === 'future' ? '·' : '✗', exc: factor < 1, cuotaMes, meta };
+        }
+        const deuda = Math.max(0, exig - totalPagado);
+        return { ...s, susp, monthMap, totalPagado, saldoApertura, aperturaAprobada: !!ap?.aprobado, exig, deuda, impagos: deuda > 0 && cuotaBase > 0 ? Math.ceil(deuda / cuotaBase) : 0 };
+    }).sort((a, b) => b.deuda - a.deuda || a.nombre.localeCompare(b.nombre));
+}
+
+// ============================================================
+// RENDER
+// ============================================================
+const socioById = id => state.socios.find(s => s.id === id);
+const socioOpts = (sel, empty='— sin asignar —') =>
+    `<option value="">${empty}</option>` + [...state.socios].sort((a,b) => a.nombre.localeCompare(b.nombre))
+        .map(s => `<option value="${s.id}" ${s.id === sel ? 'selected' : ''}>${esc(s.nombre)}</option>`).join('');
+
+function viewLogin(msg='') {
+    return `<div class="min-h-screen flex items-center justify-center p-4">
+      <form onsubmit="doLogin(event)" class="card p-6 w-full max-w-sm">
+        <div class="flex items-center gap-3 mb-5">
+          <div class="w-10 h-10 rounded-lg flex items-center justify-center font-black text-white" style="background:var(--orange)">SP</div>
+          <div><h1 class="font-extrabold text-slate-800">Conciliación Bancaria</h1><p class="text-[10px] uppercase tracking-wider text-slate-400">Directiva CCSP</p></div>
+        </div>
+        ${!CONFIG_OK ? `<p class="text-xs bg-amber-50 border border-amber-200 text-amber-800 p-3 rounded-lg mb-3">Falta configurar <b>SUPABASE_URL</b> y <b>SUPABASE_ANON_KEY</b> en el bloque CONFIG de este archivo.</p>` : ''}
+        ${msg ? `<p class="text-xs bg-rose-50 text-rose-700 p-3 rounded-lg mb-3">${esc(msg)}</p>` : ''}
+        <label class="text-[11px] font-bold text-slate-500">Email</label>
+        <input name="email" type="email" required class="inp w-full mb-3 mt-1">
+        <label class="text-[11px] font-bold text-slate-500">Clave</label>
+        <input name="password" type="password" required class="inp w-full mb-4 mt-1">
+        <button class="btn btn-p w-full" ${!CONFIG_OK ? 'disabled' : ''}>Ingresar</button>
+      </form></div>`;
+}
+
+function viewCartola() {
+    const p = state.preview;
+    const hist = state.cartolas.slice(0, 30).map(c => `<tr class="border-b border-slate-50">
+        <td class="py-1.5 mono text-[10px] text-slate-500">${esc(c.created_at.slice(0,16).replace('T',' '))}</td>
+        <td class="py-1.5">${esc(c.nombre_archivo)}</td><td class="py-1.5 text-slate-500">${esc(c.periodo || '')}</td>
+        <td class="py-1.5 text-right mono">${c.filas_procesadas}</td><td class="py-1.5 text-right mono text-emerald-700">${c.filas_nuevas}</td>
+        <td class="py-1.5 text-right mono text-slate-400">${c.filas_duplicadas}</td><td class="py-1.5 text-right mono">${c.filas_matcheadas}</td></tr>`).join('');
+
+    let prev = '';
+    if (p) {
+        const nuevos = p.rows.filter(r => !r._dup);
+        const ingN = nuevos.filter(r => r.tipo === 'INGRESO');
+        const kpi = [['Movimientos', p.rows.length, 'slate'], ['Ya existían', p.rows.length - nuevos.length, 'slate'],
+            ['Cuota confirmada', ingN.filter(r => r.socio_id && r.conciliado).length, 'emerald'],
+            ['Socio, monto a revisar', ingN.filter(r => r.socio_id && !r.conciliado).length, 'amber'],
+            ['Empates', ingN.filter(r => r._motivo === 'EMPATE').length, 'amber'],
+            ['Sin socio', ingN.filter(r => r._motivo === 'SIN_MATCH').length, 'rose']];
+        const okBadge = (ok, txt) => `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded ${ok ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}">${txt}</span>`;
+        const lotesHtml = p.lotes.map(l => {
+            const c = l.parsed.cuad, m = l.parsed.meta;
+            const cont = l.continuidad === 'OK' ? okBadge(true, 'Continúa desde datos previos')
+                : l.continuidad === 'HUECO' ? okBadge(false, `Hueco: no hay movimiento previo con saldo ${fmt(c.saldoPrevio)}`)
+                : l.continuidad === 'BASE_VACIA' ? '<span class="text-[10px] text-slate-400">Base vacía (primera carga)</span>'
+                : l.continuidad === 'INICIO' ? '<span class="text-[10px] text-slate-400">Es el periodo más antiguo de la base</span>' : '';
+            return `<div class="border border-slate-200 rounded-lg p-2.5 text-[11px]">
+              <div class="flex flex-wrap items-center gap-2 mb-1"><b>${esc(l.nombre)}</b>
+                ${m.nCartola ? `<span class="text-slate-500">Cartola N° ${esc(m.nCartola)}</span>` : ''}
+                <span class="text-slate-500">${esc(l.periodo)} · ${l.rows.length} mov. · ${l.parsed.descartadas} filas descartadas</span></div>
+              <div class="flex flex-wrap gap-1.5 items-center">
+                ${c.conSaldo ? okBadge(c.quiebres === 0, c.quiebres === 0 ? 'Saldos encadenados OK' : `${c.quiebres} quiebres de saldo`) : '<span class="text-[10px] text-amber-700">Sin columna saldo: no se puede cuadrar</span>'}
+                ${c.checks.map(k => okBadge(k.ok, k.ok ? `${k.label} ✓` : `${k.label}: esperado ${k.label.startsWith('N°') ? k.esperado : fmt(k.esperado)}, leído ${k.label.startsWith('N°') ? k.real : fmt(k.real)}`)).join('')}
+                ${cont}
+              </div></div>`;
+        }).join('');
+        const sinCat = p.lotes.some(l => l.parsed.idx.categoria < 0);
+        const filas = p.rows.slice(0, 400).map(r => {
+            const s = socioById(r.socio_id);
+            const badge = r._dup ? '<span class="text-[9px] bg-slate-100 text-slate-500 px-1.5 rounded font-bold">YA EXISTE</span>'
+                : r._posDup ? '<span class="text-[9px] bg-orange-100 text-orange-700 px-1.5 rounded font-bold">¿DUPLICADO?</span>'
+                : r.tipo === 'EGRESO' ? ''
+                : r.socio_id ? `<span class="text-[9px] ${r.conciliado ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'} px-1.5 rounded font-bold">${r.score_matching}${r.conciliado ? '' : ' · REVISAR'}</span>`
+                : `<span class="text-[9px] bg-rose-100 text-rose-700 px-1.5 rounded font-bold">${r._motivo === 'EMPATE' ? 'EMPATE' : 'SIN SOCIO'}</span>`;
+            return `<tr class="border-b border-slate-50 ${r._dup ? 'opacity-40' : ''}">
+                <td class="py-1 mono text-[10px]">${r.fecha}</td>
+                <td class="py-1 truncate max-w-[320px]" title="${esc(r.descripcion)}">${esc(r.descripcion)}</td>
+                <td class="py-1 text-right mono ${r.tipo === 'INGRESO' ? 'text-emerald-700' : 'text-rose-600'}">${r.tipo === 'EGRESO' ? '-' : ''}${fmt(r.monto)}</td>
+                <td class="py-1 text-right mono text-slate-400 text-[10px]">${r.saldo != null ? fmt(r.saldo) : ''}</td>
+                <td class="py-1 pl-3 text-[10px] font-bold text-slate-500">${r.subcategoria}</td>
+                <td class="py-1 truncate max-w-[200px]">${s ? esc(s.nombre) : ''}</td><td class="py-1 text-center">${badge}</td></tr>`;
+        }).join('');
+        prev = `<div class="card p-4 mb-4">
+          <div class="flex flex-wrap items-start justify-between gap-3 mb-3">
+            <div><h2 class="font-bold text-slate-800 text-sm">Vista previa · ${p.lotes.length} archivo(s)</h2>
+              <p class="text-[11px] text-slate-500">Revisa la cuadratura antes de confirmar. Las filas que ya existen se ignoran al guardar.</p></div>
+            <div class="flex gap-2"><button class="btn btn-g" onclick="setState({preview:null})">Cancelar</button>
+              <button class="btn btn-o" onclick="commitPreview()" ${nuevos.length ? '' : 'disabled'}>Confirmar ${nuevos.length} nuevas</button></div>
+          </div>
+          <div class="flex flex-col gap-2 mb-3">${lotesHtml}</div>
+          ${sinCat ? `<p class="text-[11px] bg-amber-50 border border-amber-200 text-amber-800 p-2 rounded-lg mb-3">Cartola sin columna <b>Categoría</b>: con socio identificado y monto múltiplo de ${fmt(MULTIPLO_CUOTA)} → CUOTA confirmada. Otros montos o sin socio → quedan <b>por revisar</b> en Conciliación.</p>` : ''}
+          <div class="grid grid-cols-2 md:grid-cols-6 gap-2 mb-3 text-center">
+            ${kpi.map(([l,v,c]) => `<div class="bg-${c}-50 rounded-lg p-2"><p class="text-[9px] uppercase font-bold text-${c}-600">${l}</p><p class="text-lg font-extrabold text-${c}-700">${v}</p></div>`).join('')}
+          </div>
+          <div class="scr overflow-auto" style="max-height:420px"><table class="w-full text-xs min-w-[860px]">
+            <thead class="text-[10px] uppercase text-slate-400 border-b sticky top-0 bg-white"><tr><th class="py-1 text-left">Fecha</th><th class="text-left">Descripción</th><th class="text-right">Monto</th><th class="text-right">Saldo</th><th class="text-left pl-3">Tipo</th><th class="text-left">Socio</th><th>Estado</th></tr></thead>
+            <tbody>${filas}</tbody></table>
+            ${p.rows.length > 400 ? `<p class="text-[10px] text-slate-400 p-2">Mostrando 400 de ${p.rows.length}.</p>` : ''}</div>
+        </div>`;
+    }
+
+    return `${prev}
+    <div class="grid md:grid-cols-2 gap-4 mb-4">
+      <div class="card p-4">
+        <h2 class="font-bold text-slate-800 text-sm mb-1">Subir cartola BancoEstado</h2>
+        <p class="text-[11px] text-slate-500 mb-3">Excel de <b>Cartola Histórica</b> o <b>Cartola en Línea</b> (ícono verde XLS). Puedes seleccionar varios archivos a la vez. Los movimientos repetidos entre cartolas se ignoran automáticamente (se identifican por fecha + monto + saldo), así que subir la cartola en línea y luego la histórica que la cubre no duplica nada.</p>
+        <label class="block border-2 border-dashed border-slate-300 rounded-xl p-6 text-center cursor-pointer hover:border-slate-400 hover:bg-slate-50">
+          <span class="text-sm font-bold text-slate-600">Seleccionar archivo(s) XLS / XLSX / CSV</span>
+          <input type="file" multiple accept=".csv,.txt,.xls,.xlsx,.pdf" class="hidden" onchange="onFileSelected(this)">
+        </label>
+      </div>
+      <div class="card p-4">
+        <h2 class="font-bold text-slate-800 text-sm mb-1">Migración desde Google Sheets</h2>
+        <p class="text-[11px] text-slate-500 mb-3">Orden recomendado: 1 → 4. El padrón se sincroniza por RUT y puede re-ejecutarse.</p>
+        <div class="grid grid-cols-2 gap-2">
+          <button class="btn btn-g" onclick="importSociosSheet()">1 · Padrón de socios</button>
+          <button class="btn btn-g" onclick="importNovedadesSheet()">2 · Novedades</button>
+          <button class="btn btn-g" onclick="importSheetTxs('2025')">3 · Movimientos 2025</button>
+          <button class="btn btn-g" onclick="importSheetTxs('2026')">4 · Movimientos 2026</button>
+        </div>
+      </div>
+    </div>
+    <div class="card p-4"><h2 class="font-bold text-slate-800 text-sm mb-2">Historial de importaciones</h2>
+      ${state.cartolas.length ? `<div class="overflow-x-auto scr"><table class="w-full text-xs min-w-[600px]"><thead class="text-[10px] uppercase text-slate-400 border-b"><tr>
+        <th class="py-1 text-left">Fecha</th><th class="text-left">Archivo</th><th class="text-left">Periodo</th><th class="text-right">Filas</th><th class="text-right">Nuevas</th><th class="text-right">Duplic.</th><th class="text-right">Match</th></tr></thead><tbody>${hist}</tbody></table></div>`
+        : '<p class="text-xs text-slate-400">Aún no hay importaciones.</p>'}</div>`;
+}
+
+function viewConciliacion() {
+    const cf = state.cf, q = unaccent(cf.q);
+    const meses = [...new Set(state.txs.map(t => t.fecha.slice(0,7)))].sort().reverse();
+    let list = state.txs.filter(t => {
+        if (cf.tipo !== 'TODOS' && t.tipo !== cf.tipo) return false;
+        if (cf.mes !== 'TODOS' && !t.fecha.startsWith(cf.mes)) return false;
+        if (cf.estado === 'REVISAR' && (t.conciliado || t.tipo === 'EGRESO')) return false;
+        if (cf.estado === 'SIN' && (t.socio_id || t.tipo === 'EGRESO')) return false;
+        if (cf.estado === 'SIN_CUOTA' && (t.socio_id || t.subcategoria !== 'CUOTA')) return false;
+        if (cf.estado === 'AUTO' && t.asignacion !== 'AUTO') return false;
+        if (cf.estado === 'MANUAL' && t.asignacion !== 'MANUAL') return false;
+        if (q && !unaccent(t.descripcion).includes(q) && !unaccent(socioById(t.socio_id)?.nombre).includes(q)) return false;
+        return true;
+    }).sort((a, b) => b.fecha.localeCompare(a.fecha) || b.id - a.id);
+    const PS = 100, pages = Math.max(1, Math.ceil(list.length / PS)), page = Math.min(cf.page, pages - 1);
+    const total = list.reduce((a, t) => a + t.monto, 0);
+    const slice = list.slice(page * PS, page * PS + PS);
+    const ingresos = state.txs.filter(t => t.tipo === 'INGRESO');
+    const cnt = { rev: ingresos.filter(t => !t.conciliado).length, sin: ingresos.filter(t => !t.socio_id).length, auto: ingresos.filter(t => t.asignacion === 'AUTO').length, man: ingresos.filter(t => t.asignacion === 'MANUAL').length };
+
+    const rows = slice.map(t => {
+        const isIng = t.tipo === 'INGRESO';
+        const tag = t.asignacion === 'MANUAL' ? '<span class="text-[9px] bg-sky-100 text-sky-700 px-1.5 rounded font-bold">MANUAL</span>'
+            : t.asignacion === 'AUTO' ? `<span class="text-[9px] bg-emerald-100 text-emerald-700 px-1.5 rounded font-bold">AUTO ${t.score_matching ?? ''}</span>` : '';
+        const badge = isIng && !t.conciliado
+            ? `${tag} <button class="text-[9px] bg-amber-100 text-amber-800 hover:bg-amber-200 px-1.5 rounded font-bold" title="Marcar como revisado" onclick="confirmarTx(${t.id})">✓ CONFIRMAR</button>`
+            : tag;
+        return `<tr class="border-b border-slate-50 hover:bg-slate-50">
+            <td class="py-1.5 mono text-[10px] text-slate-500 whitespace-nowrap">${t.fecha}</td>
+            <td class="py-1.5 truncate max-w-[340px]" title="${esc(t.descripcion)}">${esc(t.descripcion)}</td>
+            <td class="py-1.5 text-right mono font-bold whitespace-nowrap ${isIng ? 'text-emerald-700' : 'text-rose-600'}">${isIng ? '' : '-'}${fmt(t.monto)}</td>
+            <td class="py-1.5 px-2">${isIng ? `<select class="inp !py-1 !text-[11px]" onchange="setSubcat(${t.id}, this.value)">${SUBCATS.map(c => `<option ${c === t.subcategoria ? 'selected' : ''}>${c}</option>`).join('')}</select>` : '<span class="text-[10px] text-slate-400 font-bold">EGRESO</span>'}</td>
+            <td class="py-1.5">${!isIng ? '' : t.subcategoria === 'AUSPICIO'
+                ? `<select class="inp !py-1 !text-[11px] w-56 border-sky-300" onchange="setAuspiciador(${t.id}, this.value)">${auspOpts(t.auspiciador_id)}</select>`
+                : `<select class="inp !py-1 !text-[11px] w-56" onchange="setSocio(${t.id}, this.value)">${socioOpts(t.socio_id)}</select>`}</td>
+            <td class="py-1.5 text-center">${badge}</td></tr>`;
+    }).join('');
+
+    const sel = (k, opts) => `<select class="inp" onchange="setCf('${k}', this.value)">${opts.map(([v,l]) => `<option value="${v}" ${cf[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+    return `<div class="card p-4">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <div><h2 class="font-bold text-slate-800 text-sm">Conciliación de movimientos</h2>
+          <p class="text-[11px] text-slate-500">Ingresos: <b class="text-rose-600">${cnt.rev} por revisar</b> · ${cnt.sin} sin socio · ${cnt.auto} automáticos · ${cnt.man} manuales</p></div>
+        <button class="btn btn-p" onclick="rematchSinAsignar()">Re-ejecutar matching sobre ingresos sin socio</button>
+      </div>
+      <div class="flex flex-wrap gap-2 mb-3">
+        ${sel('estado', [['REVISAR','Por revisar'],['SIN','Ingresos sin socio'],['SIN_CUOTA','Cuotas sin socio'],['AUTO','Asignación automática'],['MANUAL','Asignación manual'],['TODOS','Todos']])}
+        ${sel('tipo', [['INGRESO','Ingresos'],['EGRESO','Egresos'],['TODOS','Ingresos y egresos']])}
+        ${sel('mes', [['TODOS','Todos los meses'], ...meses.map(m => [m, m])])}
+        <input class="inp w-56" placeholder="Buscar glosa o socio..." value="${esc(cf.q)}" onchange="setCf('q', this.value)">
+        <span class="text-[11px] text-slate-500 self-center ml-auto">${list.length} movimientos · ${fmt(total)}</span>
+      </div>
+      <div class="scr overflow-x-auto"><table class="w-full text-xs min-w-[900px]">
+        <thead class="text-[10px] uppercase text-slate-400 border-b"><tr><th class="py-1 text-left">Fecha</th><th class="text-left">Descripción</th><th class="text-right">Monto</th><th class="text-left px-2">Categoría</th><th class="text-left">Socio</th><th>Estado</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" class="p-4 text-center text-slate-400">Sin movimientos para estos filtros.</td></tr>'}</tbody></table></div>
+      ${pages > 1 ? `<div class="flex items-center justify-center gap-2 mt-3">
+        <button class="btn btn-g" ${page === 0 ? 'disabled' : ''} onclick="setCf('page', ${page - 1})">‹</button>
+        <span class="text-xs text-slate-500">Página ${page + 1} de ${pages}</span>
+        <button class="btn btn-g" ${page >= pages - 1 ? 'disabled' : ''} onclick="setCf('page', ${page + 1})">›</button></div>` : ''}
+    </div>`;
+}
+
+function viewEstado() {
+    const data = computeEstado();
+    const y = parseInt(state.yf), hq = unaccent(state.hq);
+    const cols = []; for (let m = 1; m <= 12; m++) cols.push({ abs: absM(y, m), label: `${MS[m-1]}'${String(y).slice(2)}` });
+    const txY = state.txs.filter(t => t.fecha.startsWith(state.yf));
+    const ing = txY.filter(t => t.tipo === 'INGRESO').reduce((a, t) => a + t.monto, 0);
+    const eg = txY.filter(t => t.tipo === 'EGRESO').reduce((a, t) => a + t.monto, 0);
+    const deudaTot = data.filter(s => !s.susp).reduce((a, s) => a + s.deuda, 0);
+    const deudaSusp = data.filter(s => s.susp).reduce((a, s) => a + s.deuda, 0);
+    // Solo cuotas del periodo de control sin socio: los aportes, ajustes y ventas sin socio no son deuda de nadie
+    const pend = state.txs.filter(t => t.tipo === 'INGRESO' && t.subcategoria === 'CUOTA' && !t.socio_id && t.fecha >= INICIO_CONTROL);
+    // Saldo real de la cuenta: saldo del último movimiento importado desde cartolas del banco
+    // (las filas de Google Sheets no cuentan: incluyen movimientos de otra cuenta y digitación manual)
+    const ultBanco = saldoBanco();
+
+    const filt = data.filter(s => (!hq || unaccent(s.nombre).includes(hq)) &&
+        (state.sf === 'TODOS' || (state.sf === 'ACTIVO' ? !s.susp : s.susp)));
+    const table = (rows, title, color) => `<div class="card mb-4 border-${color}-200">
+      <div class="p-3 border-b bg-${color}-50 rounded-t-xl flex justify-between items-center">
+        <h2 class="font-bold text-${color}-800 text-sm">${title}</h2>
+        <span class="text-[10px] font-bold bg-${color}-100 text-${color}-700 px-2 py-1 rounded-lg">${rows.length} socios</span></div>
+      <div class="scr overflow-auto" style="max-height:540px"><table class="border-collapse text-xs w-full min-w-max">
+        <thead class="sticky top-0 bg-white z-10 text-[10px] uppercase text-slate-400 border-b"><tr>
+          <th class="p-2 sticky-col text-left border-r min-w-[130px] sm:min-w-[200px]">Socio</th>
+          ${cols.map(c => `<th class="p-2 text-center mono w-9">${c.label}</th>`).join('')}
+          <th class="p-2 text-center bg-slate-50 border-l">Impagas</th><th class="p-2 text-right bg-slate-50">Deuda</th></tr></thead>
+        <tbody>${rows.map(s => `<tr class="border-b border-slate-50">
+          <td class="p-2 sticky-col border-r"><div class="truncate max-w-[120px] sm:max-w-[200px] text-[11px] font-medium" title="${esc(s.nombre)}">${esc(s.nombre)}</div>
+            <div class="text-[9px] text-slate-400">${esc(s.estado)} · pagado 2026 ${fmt(s.totalPagado - s.saldoApertura)}${s.saldoApertura ? ` · <span class="${s.saldoApertura < 0 ? 'text-rose-500' : 'text-emerald-600'}">apertura ${fmt(s.saldoApertura)}${s.aperturaAprobada ? '' : ' (sin aprobar)'}</span>` : ''}</div></td>
+          ${cols.map(c => { const m = s.monthMap[c.abs]; if (!m) return '<td></td>';
+              const cls = m.exc && m.st !== 'na' && m.st !== 'susp' ? 'hm-exc' : `hm-${m.st}`;
+              const tt = m.cuotaMes != null ? `Cuota ${fmt(m.cuotaMes)} · Exig. acum ${fmt(m.meta)}` : '';
+              return `<td class="p-0.5"><div class="h-7 rounded-md flex items-center justify-center text-[10px] font-bold ${cls}" title="${tt}">${m.lb}</div></td>`; }).join('')}
+          <td class="p-2 text-center bg-slate-50 border-l mono font-bold text-rose-600">${s.impagos || '<span class="text-slate-300">-</span>'}</td>
+          <td class="p-2 text-right bg-slate-50"><div class="mono font-bold text-rose-600">${fmt(s.deuda)}</div>
+            ${!s.susp && s.deuda > 0 ? (() => { const u = ultimoRecordatorio(s.id); return `<button class="mt-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onclick="abrirModal('recordar', ${s.id})">📣 Recordar</button>${u ? `<div class="text-[9px] text-slate-400 font-sans">avisado ${fechaCorta(u.created_at)}</div>` : ''}`; })() : ''}</td></tr>`).join('')}
+        </tbody></table></div></div>`;
+
+    const years = [...new Set([2026, new Date().getFullYear()])];
+    return `${viewAperturas()}
+      ${viewCaja(data)}
+      <div class="flex flex-wrap gap-2 mb-3">
+        <select class="inp" onchange="setState({yf:this.value})">${years.map(v => `<option ${String(v) === state.yf ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <select class="inp" onchange="setState({sf:this.value})">${[['ACTIVO','Socios activos'],['SUSP','Ex socios (solo consulta)'],['TODOS','Todos']].map(([v,l]) => `<option value="${v}" ${state.sf === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <input class="inp w-56" placeholder="Buscar socio..." value="${esc(state.hq)}" onchange="setState({hq:this.value})">
+        <button class="btn btn-g" onclick="abrirModal('config')">⚙ Datos de transferencia y mensaje</button>
+        <span class="text-[11px] text-slate-500 self-center">Deuda de ex socios (incobrable, <b>no se contabiliza</b>): ${fmt(deudaSusp)}</span>
+      </div>
+      ${table(filt.filter(s => !s.susp), 'Socios activos', 'emerald')}
+      ${filt.some(s => s.susp) ? table(filt.filter(s => s.susp), 'Ex socios: suspendidos / retirados · deuda incobrable, no se contabiliza', 'slate') : ''}`;
+}
+
+// ============================================================
+// ESTADO DE CUENTAS: recaudación potencial + cuadratura de caja
+//  - Caja real: solo movimientos de cartolas del banco (origen ARCHIVO).
+//    Saldo inicial + ingresos − egresos debe dar EXACTO el saldo de la cartola.
+//  - Potencial: lo que habría si todos los socios pagan (caja + por cobrar).
+//    El por cobrar NO es caja: se muestra aparte.
+// ============================================================
+function viewCaja(data) {
+    const pct = (v, t) => t ? Math.round(v / t * 100) + '%' : '0%';
+    // --- Recaudación de cuotas (respeta el filtro Activos / Suspendidos / Todos) ---
+    // Solo socios activos: la deuda de suspendidos/retirados se considera incobrable y no se contabiliza
+    const grupo = data.filter(s => !s.susp);
+    const exig = grupo.reduce((a, s) => a + s.exig, 0);                                   // cuotas 2026 exigibles a la fecha
+    const deuda25 = grupo.reduce((a, s) => a + Math.max(0, -s.saldoApertura), 0);         // deuda arrastrada al 31/12/2025
+    const favor25 = grupo.reduce((a, s) => a + Math.max(0, s.saldoApertura), 0);
+    const pagado = grupo.reduce((a, s) => a + (s.totalPagado - s.saldoApertura), 0);      // cuotas pagadas 2026
+    const porCobrar = grupo.reduce((a, s) => a + s.deuda, 0);
+    const anticipado = grupo.reduce((a, s) => a + Math.max(0, s.totalPagado - s.exig), 0); // pagos por adelantado
+    const potencial = exig + deuda25;                                                      // si todos pagan lo exigible
+    const cobrado = Math.max(0, potencial - porCobrar);
+    const nombreGrupo = 'socios activos';
+
+    // --- Caja real: cuenta bancaria ---
+    const origen = new Map(state.cartolas.map(c => [c.id, c.origen]));
+    const mov = state.txs.filter(t => origen.get(t.cartola_id) === 'ARCHIVO').sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
+    const neto = t => t.tipo === 'INGRESO' ? t.monto : -t.monto;
+    const sInicial = mov.length && mov[0].saldo != null ? mov[0].saldo - neto(mov[0]) : 0;
+    const ingB = mov.filter(t => t.tipo === 'INGRESO'), egB = mov.filter(t => t.tipo === 'EGRESO');
+    const sum = a => a.reduce((x, t) => x + t.monto, 0);
+    const ingTot = sum(ingB), egTot = sum(egB);
+    const ingCuota = sum(ingB.filter(t => t.subcategoria === 'CUOTA')), ingAusp = sum(ingB.filter(t => t.subcategoria === 'AUSPICIO'));
+    const ingOtros = ingTot - ingCuota - ingAusp;
+    const sCalc = sInicial + ingTot - egTot;
+    const ult = mov[mov.length - 1]; const sBanco = ult ? Number(ult.saldo) : null;
+    const dif = sBanco == null ? null : sCalc - sBanco;
+    const fueraBanco = state.txs.filter(t => t.fecha >= INICIO_CONTROL && origen.get(t.cartola_id) !== 'ARCHIVO');
+    const desde = mov[0]?.fecha?.split('-').reverse().join('/'), hasta = ult?.fecha?.split('-').reverse().join('/');
+    const proyectado = (sBanco ?? sCalc) + porCobrar;
+
+    // --- Cascada SVG: saldo inicial → +ingresos → −egresos → saldo banco → +por cobrar → potencial ---
+    const pasos = [
+        { l: 'Saldo inicial', v: sInicial, tipo: 'total', c: '#94a3b8' },
+        { l: 'Ingresos', v: ingTot, tipo: 'sube', c: '#1e293b' },
+        { l: 'Egresos', v: -egTot, tipo: 'baja', c: '#E8572A' },
+        { l: 'Saldo banco', v: sBanco ?? sCalc, tipo: 'total', c: '#22c55e' },
+        { l: 'Por cobrar', v: porCobrar, tipo: 'sube', c: '#f59e0b', punteado: true },
+        { l: 'Si todos pagan', v: proyectado, tipo: 'total', c: '#3b82f6', punteado: true },
+    ];
+    let nivel = 0; const barras = pasos.map(p => { let a, b;
+        if (p.tipo === 'total') { a = 0; b = p.v; nivel = p.v; } else { a = nivel; b = nivel + p.v; nivel = b; }
+        return { ...p, a: Math.min(a, b), b: Math.max(a, b) }; });
+    const maxV = Math.max(1, ...barras.map(x => x.b)), W = 620, H = 210, top = 22, base = 170, bw = 70, gap = (W - bw * barras.length) / (barras.length + 1);
+    const yy = v => base - (v / maxV) * (base - top);
+    const svg = `<svg viewBox="0 0 ${W} ${H}" class="w-full" style="max-height:240px">
+      <line x1="0" y1="${base}" x2="${W}" y2="${base}" stroke="#e2e8f0"/>
+      ${barras.map((x, i) => { const X = gap + i * (bw + gap); const y1 = yy(x.b), h = Math.max(2, yy(x.a) - yy(x.b));
+        const sig = x.tipo === 'sube' ? '+' : x.tipo === 'baja' ? '−' : '';
+        return `<rect x="${X}" y="${y1}" width="${bw}" height="${h}" rx="4" fill="${x.c}" ${x.punteado ? 'fill-opacity="0.35" stroke="' + x.c + '" stroke-dasharray="4 3"' : ''}><title>${x.l}: ${fmt(Math.abs(x.v))}</title></rect>
+          <text x="${X + bw / 2}" y="${y1 - 6}" text-anchor="middle" font-size="11" font-weight="800" fill="#1e293b">${sig}${fmtK(Math.abs(x.v))}</text>
+          <text x="${X + bw / 2}" y="${base + 16}" text-anchor="middle" font-size="10" fill="#64748b">${x.l}</text>
+          ${i < barras.length - 1 ? `<line x1="${X + bw}" y1="${yy(nivelTras(barras, i))}" x2="${X + bw + gap}" y2="${yy(nivelTras(barras, i))}" stroke="#cbd5e1" stroke-dasharray="3 3"/>` : ''}`; }).join('')}
+    </svg>`;
+
+    const fila = (l, v, p, color = 'text-slate-800', extra = '') => `<div class="flex items-center justify-between py-1.5 border-b border-slate-50 text-xs ${extra}"><span class="text-slate-600">${l}</span><span class="flex gap-3 items-baseline"><b class="mono ${color}">${fmt(v)}</b><span class="text-slate-400 w-10 text-right">${p}</span></span></div>`;
+    return `<div class="grid xl:grid-cols-5 gap-4 mb-4">
+      <div class="card p-4 xl:col-span-2">
+        <h2 class="font-bold text-slate-800 text-sm">Recaudación de cuotas · ${nombreGrupo}</h2>
+        <p class="text-[11px] text-slate-500 mb-3">Cuánto deberíamos tener si todos pagan lo exigible a la fecha (2026 + deuda de apertura).</p>
+        <div class="flex flex-wrap items-center gap-5">
+          ${svgDonut([{ l: 'Cobrado', v: cobrado, c: '#22c55e' }, { l: 'Por cobrar', v: porCobrar, c: '#ef4444' }])}
+          <div class="flex-1 min-w-[230px]">
+            ${fila('<b>Potencial si todos pagan</b>', potencial, '100%', 'text-slate-900')}
+            ${fila('&nbsp;&nbsp;Cuotas 2026 exigibles', exig, pct(exig, potencial), 'text-slate-600')}
+            ${fila('&nbsp;&nbsp;Deuda arrastrada 2025', deuda25, pct(deuda25, potencial), 'text-slate-600')}
+            ${fila('<span class="inline-block w-2.5 h-2.5 rounded-sm align-middle mr-1" style="background:#22c55e"></span>Cobrado', cobrado, pct(cobrado, potencial), 'text-emerald-700')}
+            ${fila('<span class="inline-block w-2.5 h-2.5 rounded-sm align-middle mr-1" style="background:#ef4444"></span>Por cobrar', porCobrar, pct(porCobrar, potencial), 'text-rose-600')}
+            <p class="text-[10px] text-slate-400 mt-2">Pagado en 2026: ${fmt(pagado)} · saldos a favor 2025: ${fmt(favor25)} · pagos adelantados: ${fmt(anticipado)}.</p>
+          </div>
+        </div>
+      </div>
+      <div class="card p-4 xl:col-span-3">
+        <div class="flex flex-wrap justify-between items-start gap-2 mb-1">
+          <div><h2 class="font-bold text-slate-800 text-sm">Flujo de caja · cuenta banco ${desde ? `(${desde} → ${hasta})` : ''}</h2>
+            <p class="text-[11px] text-slate-500">Solo movimientos de las cartolas del banco. Lo punteado (por cobrar) aún no es caja.</p></div>
+          ${dif == null ? '' : dif === 0 ? '<span class="text-[11px] font-bold bg-emerald-100 text-emerald-700 px-2 py-1 rounded-lg">✓ Cuadra con la cartola</span>'
+            : `<span class="text-[11px] font-bold bg-rose-100 text-rose-700 px-2 py-1 rounded-lg">Diferencia con cartola: ${fmt(dif)}</span>`}
+        </div>
+        ${mov.length ? svg : '<p class="text-xs text-slate-400 p-6 text-center">Sube cartolas del banco para ver el flujo de caja.</p>'}
+        <div class="grid md:grid-cols-2 gap-x-6 mt-2">
+          <div>${fila('Saldo inicial cuenta', sInicial, '')}
+            ${fila('+ Ingresos', ingTot, '100%', 'text-slate-900')}
+            ${fila('&nbsp;&nbsp;Cuotas', ingCuota, pct(ingCuota, ingTot), 'text-slate-600')}
+            ${fila('&nbsp;&nbsp;Auspicios', ingAusp, pct(ingAusp, ingTot), 'text-slate-600')}
+            ${fila('&nbsp;&nbsp;Ventas y aportes', ingOtros, pct(ingOtros, ingTot), 'text-slate-600')}</div>
+          <div>${fila('− Egresos', egTot, pct(egTot, ingTot) + ' ing.', 'text-orange-600')}
+            ${fila('= Saldo calculado', sCalc, '', 'text-slate-900')}
+            ${fila('Saldo según cartola' + (hasta ? ' ' + hasta : ''), sBanco ?? 0, '', 'text-emerald-700', 'bg-emerald-50 px-1 rounded')}
+            ${fila('+ Por cobrar a socios', porCobrar, pct(porCobrar, proyectado) + ' pot.', 'text-amber-600')}
+            ${fila('= Saldo si todos pagan', proyectado, '', 'text-sky-700 font-bold')}</div>
+        </div>
+        ${fueraBanco.length ? `<p class="text-[10px] text-slate-500 mt-2">Fuera de la cuenta (no suman a la caja): ${fueraBanco.length} movimientos 2026 de Google Sheets (cuenta anterior o NO_EN_BANCO), neto ${fmt(fueraBanco.reduce((a, t) => a + neto(t), 0))}.</p>` : ''}
+      </div>
+    </div>`;
+}
+function nivelTras(barras, i) { const x = barras[i]; return x.tipo === 'baja' ? x.a : x.b; }
+
+// Saldos de apertura al 31/12/2025: revisión y aprobación por la directiva
+function viewAperturas() {
+    const ap = (state.aperturas || []).map(a => ({ ...a, s: socioById(a.socio_id) })).filter(a => a.s);
+    const conSaldo = ap.filter(a => Number(a.saldo) !== 0 || Number(a.saldo_calculado) !== 0 || a.observacion)
+        .sort((a, b) => Number(a.saldo) - Number(b.saldo));
+    const pend = ap.filter(a => !a.aprobado);
+    const deuda = ap.filter(a => a.saldo < 0).reduce((t, a) => t - Number(a.saldo), 0);
+    const favor = ap.filter(a => a.saldo > 0).reduce((t, a) => t + Number(a.saldo), 0);
+    const sinSocio2025 = state.txs.filter(t => t.tipo === 'INGRESO' && t.subcategoria === 'CUOTA' && !t.socio_id && t.fecha < INICIO_CONTROL);
+    const abierto = state.verAperturas ?? pend.length > 0;
+    return `<div class="card mb-4 border-amber-200">
+      <div class="p-3 bg-amber-50 rounded-t-xl flex flex-wrap items-center justify-between gap-2 cursor-pointer" onclick="setState({verAperturas:${!abierto}})">
+        <div><h2 class="font-bold text-amber-900 text-sm">Saldos de apertura al 31/12/2025 ${abierto ? '▾' : '▸'}</h2>
+          <p class="text-[11px] text-amber-800">${conSaldo.filter(a => a.saldo < 0).length} socios con deuda (${fmt(deuda)}) · ${conSaldo.filter(a => a.saldo > 0).length} a favor (${fmt(favor)}) ·
+          <b>${pend.length ? `${pend.length} sin aprobar` : 'todos aprobados'}</b></p></div>
+        ${sinSocio2025.length ? `<span class="text-[10px] bg-rose-100 text-rose-700 font-bold px-2 py-1 rounded-lg">Antes de aprobar: ${sinSocio2025.length} cuotas 2025 sin socio (${fmt(sinSocio2025.reduce((a, t) => a + t.monto, 0))})</span>` : ''}
+      </div>
+      ${abierto ? `<div class="p-3">
+        <p class="text-[11px] text-slate-600 mb-3">Propuesta calculada con la regla FIFO 2025. Corrige las cuotas 2025 sin socio en <b>Conciliación</b> y luego <b>Recalcular</b>. Puedes ajustar un saldo a mano antes de aprobar. Una vez aprobado queda congelado: cambios en datos 2025 ya no afectan 2026.</p>
+        <div class="flex flex-wrap gap-2 mb-3 items-center">
+          <button class="btn btn-g" onclick="recalcularAperturas()">Recalcular propuesta</button>
+          <input class="inp w-56" placeholder="Referencia acta (ej. Acta 2026-11)" value="${esc(state.actaApertura)}" oninput="state.actaApertura=this.value">
+          <button class="btn btn-o" ${pend.length ? '' : 'disabled'} onclick="aprobarAperturas()">Aprobar ${pend.length} pendientes</button>
+        </div>
+        <div class="scr overflow-auto" style="max-height:320px"><table class="w-full text-xs min-w-[640px]">
+          <thead class="text-[10px] uppercase text-slate-400 border-b sticky top-0 bg-white"><tr><th class="py-1 text-left">Socio</th><th class="text-left">Estado</th><th class="text-right">Calculado</th><th class="text-right">Saldo apertura</th><th class="text-center">Aprobado</th></tr></thead>
+          <tbody>${conSaldo.map(a => `<tr class="border-b border-slate-50">
+            <td class="py-1.5 font-medium">${esc(a.s.nombre)}${a.observacion ? `<div class="text-[10px] text-sky-700 font-normal">📝 ${esc(a.observacion)}</div>` : ''}</td><td class="text-[10px]">${esc(a.s.estado)}</td>
+            <td class="text-right mono text-slate-400">${fmt(a.saldo_calculado)}</td>
+            <td class="text-right">${a.aprobado ? `<span class="mono font-bold ${a.saldo < 0 ? 'text-rose-600' : a.saldo > 0 ? 'text-emerald-700' : 'text-slate-500'}">${fmt(a.saldo)}</span>
+                  <button class="ml-2 text-[10px] font-bold text-sky-700 hover:underline" onclick="abrirModal('apertura', ${a.socio_id})">Ajustar</button>`
+                : `<input type="number" step="1" class="inp w-28 text-right mono" value="${a.saldo}" onchange="setSaldoApertura(${a.socio_id}, this.value)">`}</td>
+            <td class="text-center text-[10px]">${a.aprobado ? `<span class="text-emerald-700 font-bold">✓ ${esc(a.acta || '')}</span>` : '<span class="text-amber-600 font-bold">pendiente</span>'}</td></tr>`).join('')
+            || '<tr><td colspan="5" class="p-3 text-center text-slate-400">Sin saldos distintos de cero.</td></tr>'}</tbody></table></div>
+      </div>` : ''}
+    </div>`;
+}
+async function recalcularAperturas() {
+    await withBusy('Recalculando saldos de apertura...', async () => {
+        const { error } = await sb.rpc('recalcular_saldos_apertura'); if (error) throw error;
+        await loadAll(); toast('Propuesta recalculada (los saldos aprobados no cambian).');
+    });
+}
+async function setSaldoApertura(socioId, val) {
+    const saldo = parseInt(val); if (isNaN(saldo)) return toast('Monto inválido', 'err');
+    const { error } = await sb.from('saldos_apertura').update({ saldo, updated_at: new Date().toISOString() }).eq('socio_id', socioId).eq('aprobado', false);
+    if (error) return toast(error.message, 'err');
+    const a = state.aperturas.find(x => x.socio_id === socioId); if (a) a.saldo = saldo; render();
+}
+async function aprobarAperturas() {
+    const acta = (state.actaApertura || '').trim();
+    if (!acta) return toast('Indica la referencia del acta de directiva', 'err');
+    if (!confirm(`¿Aprobar y congelar los saldos de apertura pendientes con "${acta}"?`)) return;
+    await withBusy('Aprobando saldos de apertura...', async () => {
+        const { error } = await sb.from('saldos_apertura').update({ aprobado: true, acta, aprobado_at: new Date().toISOString() }).eq('aprobado', false);
+        if (error) throw error; await loadAll(); toast('Saldos de apertura aprobados y congelados.');
+    });
+}
+
+function viewSocios() {
+    const e = state.editSocio, s = e && e !== 'new' ? socioById(e) : {};
+    const form = e ? `<form onsubmit="saveSocio(event)" class="card p-4 mb-4 grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
+        ${[['rut','RUT',s.rut],['nombre','Nombre',s.nombre],['email','Email',s.email],['telefono','Teléfono (569…)',s.telefono],['tipo_socio','Tipo',s.tipo_socio]].map(([k,l,v]) =>
+          `<label class="text-[10px] font-bold text-slate-500">${l}<input name="${k}" class="inp w-full mt-1" value="${esc(v || '')}"></label>`).join('')}
+        <label class="text-[10px] font-bold text-slate-500">Estado<select name="estado" class="inp w-full mt-1">${ESTADOS.map(x => `<option ${x === (s.estado || 'ACTIVO') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+        <label class="text-[10px] font-bold text-slate-500">Cuota<input name="cuota_mensual" type="number" class="inp w-full mt-1" value="${s.cuota_mensual ?? CUOTA_BASE}"></label>
+        <label class="text-[10px] font-bold text-slate-500">Ingreso<input name="fecha_ingreso" type="date" class="inp w-full mt-1" value="${s.fecha_ingreso || ''}"></label>
+        <label class="text-[10px] font-bold text-slate-500">Salida<input name="fecha_salida" type="date" class="inp w-full mt-1" value="${s.fecha_salida || ''}"></label>
+        <label class="text-[10px] font-bold text-slate-500">Rol<select name="rol" class="inp w-full mt-1">${['socio','directiva','admin'].map(x => `<option ${x === (s.rol || 'socio') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+        <div class="flex gap-2"><button class="btn btn-p">Guardar</button><button type="button" class="btn btn-g" onclick="setState({editSocio:null})">Cancelar</button></div>
+      </form>` : '';
+
+    const socios = [...state.socios].sort((a, b) => a.nombre.localeCompare(b.nombre));
+    const novs = [...state.novs].sort((a, b) => b.fecha_inicio.localeCompare(a.fecha_inicio));
+    return `${form}
+    <div class="grid lg:grid-cols-3 gap-4">
+      <div class="card p-4 lg:col-span-2">
+        <div class="flex justify-between items-center mb-2"><h2 class="font-bold text-slate-800 text-sm">Padrón (${socios.length})</h2>
+          <button class="btn btn-p" onclick="setState({editSocio:'new'})">+ Socio</button></div>
+        <div class="scr overflow-auto" style="max-height:600px"><table class="w-full text-xs min-w-[640px]">
+          <thead class="text-[10px] uppercase text-slate-400 border-b sticky top-0 bg-white"><tr><th class="py-1 text-left">Nombre</th><th class="text-left">RUT</th><th class="text-left">Estado</th><th class="text-left">Ingreso</th><th class="text-left">Salida</th><th class="text-right">Cuota</th><th>Rol</th><th></th></tr></thead>
+          <tbody>${socios.map(x => `<tr class="border-b border-slate-50 hover:bg-slate-50">
+            <td class="py-1.5 font-medium">${esc(x.nombre)}</td><td class="mono text-[10px]">${esc(x.rut)}</td>
+            <td><span class="text-[10px] font-bold ${isSalida(x.estado) ? 'text-rose-600' : 'text-emerald-700'}">${esc(x.estado)}</span></td>
+            <td class="mono text-[10px]">${x.fecha_ingreso || ''}</td><td class="mono text-[10px]">${x.fecha_salida || ''}</td>
+            <td class="text-right mono">${fmt(x.cuota_mensual)}</td><td class="text-center text-[10px]">${x.rol}</td>
+            <td class="text-right"><button class="text-[11px] font-bold text-sky-700 hover:underline" onclick="setState({editSocio:${x.id}}); window.scrollTo(0,0)">Editar</button></td></tr>`).join('')}</tbody></table></div>
+      </div>
+      <div class="flex flex-col gap-4">
+        <div class="card p-4">
+          <h2 class="font-bold text-slate-800 text-sm mb-2">Novedades (becas / congelados)</h2>
+          <form onsubmit="addNovedad(event)" class="grid grid-cols-2 gap-2 mb-3">
+            <select name="socio_id" class="inp col-span-2">${socioOpts(null, '— socio —')}</select>
+            <select name="tipo" class="inp col-span-2">${TIPOS_NOV.map(t => `<option>${t.t}</option>`).join('')}</select>
+            <label class="text-[10px] font-bold text-slate-500">Inicio<input name="fecha_inicio" type="date" class="inp w-full mt-1"></label>
+            <label class="text-[10px] font-bold text-slate-500">Término<input name="fecha_termino" type="date" class="inp w-full mt-1"></label>
+            <button class="btn btn-p col-span-2">Agregar novedad</button></form>
+          <div class="scr overflow-auto" style="max-height:260px">${novs.map(n => `<div class="flex justify-between items-center border-b border-slate-50 py-1.5 text-[11px]">
+            <div><b>${esc(socioById(n.socio_id)?.nombre || '?')}</b><br><span class="text-slate-500">${esc(n.tipo_novedad)} · ${n.fecha_inicio} → ${n.fecha_termino || 'indefinida'}</span></div>
+            <button class="text-rose-500 font-bold px-2" onclick="delRow('novedades', ${n.id})">×</button></div>`).join('') || '<p class="text-xs text-slate-400">Sin novedades.</p>'}</div>
+        </div>
+        <div class="card p-4">
+          <h2 class="font-bold text-slate-800 text-sm mb-1">Alias de matching</h2>
+          <p class="text-[10px] text-slate-500 mb-2">Nombre del titular tal como aparece en la glosa (ej. un apoderado que paga por el socio). Score 95. Se cargan desde la columna Nombre_Banco y se aprenden solos al asignar pagos a mano.</p>
+          <form onsubmit="addAlias(event)" class="flex flex-col gap-2 mb-3">
+            <select name="socio_id" class="inp">${socioOpts(null, '— socio —')}</select>
+            <div class="flex gap-2"><input name="alias" class="inp flex-1" placeholder="texto en la glosa"><button class="btn btn-p">+</button></div></form>
+          <div class="scr overflow-auto" style="max-height:200px">${state.aliases.map(a => `<div class="flex justify-between items-center border-b border-slate-50 py-1 text-[11px]">
+            <span><b>${esc(socioById(a.socio_id)?.nombre || '?')}</b> ← <span class="mono">${esc(a.alias)}</span></span>
+            <button class="text-rose-500 font-bold px-2" onclick="delRow('alias_socio', ${a.id})">×</button></div>`).join('') || '<p class="text-xs text-slate-400">Sin alias.</p>'}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ============================================================
+// AUSPICIADORES: reconocimiento en glosas bancarias
+// ============================================================
+function matchAuspiciador(tx) {
+    if (tx.tipo !== 'INGRESO') return null;
+    const txt = unaccent(tx.descripcion).replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ');
+    const a = (state.auspiciadores || []).find(x => x.alias_banco && normAlias(x.alias_banco).length >= 4 && txt.includes(normAlias(x.alias_banco)));
+    return a ? a.id : null;
+}
+async function setAuspiciador(txId, val) {
+    const auspiciador_id = val ? parseInt(val) : null;
+    await patchTx(txId, { auspiciador_id, subcategoria: 'AUSPICIO', socio_id: null, asignacion: auspiciador_id ? 'MANUAL' : null, conciliado: !!auspiciador_id });
+}
+const auspOpts = sel => `<option value="">— auspiciador —</option>` + [...(state.auspiciadores || [])].sort((a, b) => a.nombre.localeCompare(b.nombre))
+    .map(a => `<option value="${a.id}" ${a.id === sel ? 'selected' : ''}>${esc(a.nombre)}</option>`).join('');
+
+// ============================================================
+// MÉTRICAS DEL DASHBOARD (misma lógica que publico.html)
+// ============================================================
+const NIVELES = { SPONSOR_OFICIAL: 'Sponsor Oficial', PARTNER: 'Partner', COLABORADOR: 'Colaborador' };
+const TIPOS_AUSP = { MONETARIO: 'Monetario', ESPECIE: 'Equipamiento / Especie', BENEFICIO: 'Descuentos / Beneficio' };
+function saldoBanco() {
+    const origenCart = new Map(state.cartolas.map(c => [c.id, c.origen]));
+    const mov = state.txs.filter(t => t.saldo != null && origenCart.get(t.cartola_id) === 'ARCHIVO')
+        .sort((a, b) => a.fecha.localeCompare(b.fecha) || a.id - b.id);
+    return mov[mov.length - 1] || null;
+}
+// Objetivo de las metas para el periodo: año completo o un mes (anual/12, mensual x1)
+function objetivoMeta(m, porMes) { const v = Number(m.monto_objetivo); return porMes ? (m.periodicidad === 'MENSUAL' ? v : v / 12) : (m.periodicidad === 'MENSUAL' ? v * 12 : v); }
+// "Llenado de vaso" de metas: lo recaudado cubre las metas en orden de prioridad
+function cascadaMetas(metas, recaudado, porMes) {
+    let resto = recaudado, acum = 0;
+    return metas.map(m => {
+        const objetivo = Math.round(objetivoMeta(m, porMes));
+        const cubierto = Math.max(0, Math.min(objetivo, resto)); resto -= cubierto;
+        const inicio = acum; acum += objetivo;
+        const unidades = m.equivalencia_costo ? Math.floor(cubierto / Number(m.equivalencia_costo)) : null;
+        return { ...m, objetivo, cubierto, falta: objetivo - cubierto, pct: objetivo ? cubierto / objetivo : 0, inicio, fin: acum, unidades };
+    });
+}
+function svgDonut(parts, size = 150) {
+    const total = parts.reduce((a, p) => a + p.v, 0); const r = 54, c = 2 * Math.PI * r; let off = 0;
+    if (!total) return `<svg width="${size}" height="${size}" viewBox="0 0 150 150"><circle cx="75" cy="75" r="${r}" fill="none" stroke="#e2e8f0" stroke-width="20"/><text x="75" y="80" text-anchor="middle" font-size="12" fill="#94a3b8">Sin datos</text></svg>`;
+    const arcs = parts.filter(p => p.v > 0).map(p => { const len = c * p.v / total; const s = `<circle cx="75" cy="75" r="${r}" fill="none" stroke="${p.c}" stroke-width="20" stroke-dasharray="${len} ${c - len}" stroke-dashoffset="${-off}" transform="rotate(-90 75 75)"><title>${esc(p.l)}: ${fmt(p.v)}</title></circle>`; off += len; return s; }).join('');
+    return `<svg width="${size}" height="${size}" viewBox="0 0 150 150">${arcs}<text x="75" y="72" text-anchor="middle" font-size="10" fill="#64748b">Total</text><text x="75" y="88" text-anchor="middle" font-size="13" font-weight="800" fill="#1e293b">${fmtK(total)}</text></svg>`;
+}
+const fmtK = v => v >= 1e6 ? '$' + (v / 1e6).toLocaleString('es-CL', { maximumFractionDigits: 1 }) + 'M' : v >= 1e3 ? '$' + Math.round(v / 1e3) + 'K' : '$' + v;
+// Plural de la primera palabra: 'hora de entrenamiento' -> 'horas de entrenamiento'
+const pluralUnidad = (u, n) => { u = u || 'unidad'; if (n === 1) return u; const [p, ...r] = u.split(' '); return [p + (/[aeiouáéíóú]$/i.test(p) ? 's' : 'es'), ...r].join(' '); };
+const PALETA = ['#1e293b', '#22c55e', '#E8572A', '#3b82f6', '#a855f7', '#f59e0b', '#14b8a6', '#94a3b8'];
+
+function viewDashboard() {
+    const y = state.dy, m = state.dm, porMes = m !== 'TODOS';
+    const enPer = t => t.fecha.startsWith(y) && (!porMes || t.fecha.slice(5, 7) === m) && !String(t.categoria || '').startsWith('NO_EN_BANCO');
+    const tx = state.txs.filter(enPer);
+    const sum = arr => arr.reduce((a, t) => a + t.monto, 0);
+    const cuotas = sum(tx.filter(t => t.tipo === 'INGRESO' && t.subcategoria === 'CUOTA'));
+    const ausp = sum(tx.filter(t => t.tipo === 'INGRESO' && t.subcategoria === 'AUSPICIO'));
+    const otros = sum(tx.filter(t => t.tipo === 'INGRESO' && !['CUOTA', 'AUSPICIO'].includes(t.subcategoria)));
+    const egresos = tx.filter(t => t.tipo === 'EGRESO'); const egrTot = sum(egresos);
+    const metas = (state.metas || []).filter(x => x.activa && String(x.anio) === y).sort((a, b) => a.orden - b.orden || a.id - b.id);
+    const recaudado = cuotas + ausp;
+    const cas = cascadaMetas(metas, recaudado, porMes);
+    const objetivoTot = cas.reduce((a, x) => a + x.objetivo, 0);
+    const est = computeEstado(); const activos = est.filter(s => !s.susp);
+    const porCobrar = activos.reduce((a, s) => a + s.deuda, 0); const conDeuda = activos.filter(s => s.deuda > 0).length;
+    const banco = saldoBanco();
+    const per = porMes ? `${MFULL[parseInt(m) - 1]} ${y}` : y;
+
+    const egrCat = {}; egresos.forEach(t => { const k = (t.categoria || 'Sin categoría').trim() || 'Sin categoría'; egrCat[k] = (egrCat[k] || 0) + t.monto; });
+    let egrList = Object.entries(egrCat).sort((a, b) => b[1] - a[1]);
+    if (egrList.length > 7) egrList = [...egrList.slice(0, 6), ['Otras categorías', egrList.slice(6).reduce((a, x) => a + x[1], 0)]];
+    const maxE = Math.max(1, ...egrList.map(x => x[1]));
+
+    const kpi = (titulo, valor, sub, color) => `<div class="card p-3 md:p-4"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">${titulo}</p>
+        <p class="text-lg md:text-2xl font-extrabold" style="color:${color}">${valor}</p><p class="text-[10px] text-slate-500 mt-1 leading-tight">${sub}</p></div>`;
+    const pctTot = objetivoTot ? Math.min(1, recaudado / objetivoTot) : 0;
+    const falta = Math.max(0, objetivoTot - recaudado);
+
+    const tracker = metas.length ? `
+      <div class="relative h-6 bg-slate-100 rounded-full overflow-hidden mb-1">
+        <div class="h-full rounded-full" style="width:${(pctTot * 100).toFixed(1)}%;background:#22c55e"></div>
+        ${cas.slice(0, -1).map(x => `<div class="absolute top-0 h-full border-r-2 border-white/90" style="left:${(x.fin / objetivoTot * 100).toFixed(1)}%"></div>`).join('')}
+        <span class="absolute inset-0 flex items-center justify-center text-[11px] font-extrabold text-slate-800">${(pctTot * 100).toFixed(0)}% · ${fmt(recaudado)} de ${fmt(objetivoTot)}</span>
+      </div>
+      <div class="relative h-5 mb-3 text-[9px] text-slate-500 hidden sm:block">${cas.map((x, i) => `<span class="absolute truncate" style="left:${(x.inicio / objetivoTot * 100).toFixed(1)}%;max-width:${((x.fin - x.inicio) / objetivoTot * 100).toFixed(1)}%">Meta ${i + 1}: ${esc(x.nombre)}</span>`).join('')}</div>
+      <div class="grid md:grid-cols-3 gap-2 mb-3">
+        <div class="rounded-lg p-3 bg-rose-50"><p class="text-[9px] uppercase font-bold text-rose-600">Falta por recaudar (${per})</p><p class="text-xl font-extrabold text-rose-600">${fmt(falta)}</p></div>
+        <div class="rounded-lg p-3 bg-amber-50"><p class="text-[9px] uppercase font-bold text-amber-700">Cobro pendiente a socios (hoy)</p><p class="text-xl font-extrabold text-amber-600">${fmt(porCobrar)}</p>
+          <p class="text-[10px] text-amber-800">${falta > 0 ? (porCobrar >= falta ? 'Cobrando lo pendiente se cubren todas las metas.' : `Cobrando lo pendiente se cubre ${((recaudado + porCobrar) / objetivoTot * 100).toFixed(0)}% del objetivo.`) : 'Metas del periodo cubiertas.'}</p></div>
+        <div class="rounded-lg p-3 bg-emerald-50"><p class="text-[9px] uppercase font-bold text-emerald-700">Socios al día</p><p class="text-xl font-extrabold text-emerald-700">${activos.length - conDeuda} de ${activos.length}</p></div>
+      </div>
+      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">${cas.map((x, i) => `<div class="border border-slate-200 rounded-lg p-3">
+          <div class="flex justify-between items-start gap-2"><p class="text-xs font-bold text-slate-800">Meta ${i + 1}: ${esc(x.nombre)}</p><span class="text-[10px] font-extrabold ${x.pct >= 1 ? 'text-emerald-600' : 'text-slate-500'}">${(x.pct * 100).toFixed(0)}%</span></div>
+          <div class="h-1.5 bg-slate-100 rounded-full my-2"><div class="h-full rounded-full" style="width:${(x.pct * 100).toFixed(0)}%;background:${x.pct >= 1 ? '#22c55e' : '#f59e0b'}"></div></div>
+          <p class="text-[11px] text-slate-600">${x.unidades != null && x.unidades > 0 ? `Con lo recaudado ${porMes ? 'este mes' : 'este año'} cubrimos <b>${x.unidades.toLocaleString('es-CL')} ${esc(pluralUnidad(x.equivalencia_unidad, x.unidades))}</b>.` : ''}
+            ${x.falta > 0 ? ` Faltan <b class="text-rose-600">${fmt(x.falta)}</b> para ${esc(x.nombre.toLowerCase())}.` : ' <b class="text-emerald-600">Meta cubierta.</b>'}</p></div>`).join('')}</div>`
+        : `<div class="text-center p-6"><p class="text-sm text-slate-500 mb-3">No hay metas definidas para ${y}. Defínelas para mostrar el avance y el impacto de cada aporte.</p>
+           <button class="btn btn-p" onclick="setState({tab:'metas'})">Definir metas</button></div>`;
+
+    const monthOpts = `<option value="TODOS" ${m === 'TODOS' ? 'selected' : ''}>Todo el año</option>` + MFULL.map((x, i) => `<option value="${pad(i + 1)}" ${m === pad(i + 1) ? 'selected' : ''}>${x}</option>`).join('');
+    return `<div class="flex flex-wrap gap-2 mb-3 items-center">
+        <select class="inp" onchange="setState({dy:this.value})">${[...new Set([2026, new Date().getFullYear()])].map(v => `<option ${String(v) === y ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <select class="inp" onchange="setState({dm:this.value})">${monthOpts}</select>
+        <span class="text-[11px] text-slate-500">Excluye movimientos marcados NO_EN_BANCO.</span>
+      </div>
+      <div class="grid grid-cols-2 lg:grid-cols-5 gap-2 md:gap-3 mb-4">
+        ${kpi('Ingresos totales', fmt(recaudado), `Cuotas ${fmt(cuotas)} + auspicios ${fmt(ausp)}<br>Aparte: ventas y aportes ${fmt(otros)}`, '#1e293b')}
+        ${kpi('Egresos comprometidos', metas.length ? fmt(objetivoTot) : '—', `${metas.length ? 'Suma de metas del periodo' : 'Sin metas definidas'}<br>Ejecutados: ${fmt(egrTot)}`, '#E8572A')}
+        ${kpi('Saldo actual disponible', banco ? fmt(banco.saldo) : '—', banco ? `Cuenta banco al ${banco.fecha.split('-').reverse().join('/')}` : 'Sube una cartola', '#22c55e')}
+        ${kpi('Monto crítico por cobrar', fmt(porCobrar), `${conDeuda} socios activos con deuda (hoy)`, '#ef4444')}
+        ${kpi('Aportes por auspicios', fmt(ausp), `${(state.auspiciadores || []).filter(auspVigente).length} auspiciadores activos`, '#3b82f6')}
+      </div>
+      <div class="card p-4 mb-4"><div class="flex flex-wrap justify-between items-center gap-2 mb-3">
+        <div><h2 class="font-bold text-slate-800 text-sm">Transparencia y metas · ${per}</h2><p class="text-[11px] text-slate-500">Lo recaudado (cuotas + auspicios) cubre las metas en orden de prioridad.</p></div>
+        <button class="btn btn-g" onclick="setState({tab:'metas'})">Editar metas</button></div>${tracker}</div>
+      <div class="grid lg:grid-cols-2 gap-4">
+        <div class="card p-4"><h2 class="font-bold text-slate-800 text-sm mb-3">¿De dónde vienen los ingresos? · ${per}</h2>
+          <div class="flex flex-wrap items-center gap-6">${svgDonut([{ l: 'Cuotas', v: cuotas, c: '#1e293b' }, { l: 'Auspicios', v: ausp, c: '#3b82f6' }, { l: 'Ventas y aportes', v: otros, c: '#22c55e' }])}
+          <div class="text-xs space-y-2">${[['Cuotas socios', cuotas, '#1e293b'], ['Auspicios', ausp, '#3b82f6'], ['Ventas y aportes (tricotas, eventos…)', otros, '#22c55e']].map(([l, v, c]) => {
+              const tt = cuotas + ausp + otros; return `<div class="flex items-center gap-2"><span class="w-3 h-3 rounded-sm" style="background:${c}"></span><span class="text-slate-600">${l}</span><b class="mono ml-auto pl-3">${fmt(v)}</b><span class="text-slate-400 w-10 text-right">${tt ? Math.round(v / tt * 100) : 0}%</span></div>`; }).join('')}</div></div></div>
+        <div class="card p-4"><h2 class="font-bold text-slate-800 text-sm mb-3">¿En qué se gasta? · ${per} · ${fmt(egrTot)}</h2>
+          ${egrList.length ? egrList.map(([k, v], i) => `<div class="mb-2"><div class="flex justify-between text-[11px] mb-0.5"><span class="text-slate-600 truncate">${esc(k)}</span><span class="mono font-bold">${fmt(v)} <span class="text-slate-400 font-normal">${Math.round(v / egrTot * 100)}%</span></span></div>
+            <div class="h-2.5 bg-slate-100 rounded-full"><div class="h-full rounded-full" style="width:${(v / maxE * 100).toFixed(1)}%;background:${PALETA[i % PALETA.length]}"></div></div></div>`).join('')
+            : '<p class="text-xs text-slate-400">Sin egresos en el periodo.</p>'}</div>
+      </div>`;
+}
+
+// ============================================================
+// METAS Y AUSPICIADORES (CRUD con modales)
+// ============================================================
+const auspVigente = a => a.estado === 'ACTIVO' && (!a.fecha_termino || a.fecha_termino >= new Date().toISOString().slice(0, 10));
+function estadoAusp(a) { return a.estado === 'ACTIVO' && a.fecha_termino && a.fecha_termino < new Date().toISOString().slice(0, 10) ? 'VENCIDO' : a.estado; }
+function logoAusp(a, h = 'h-12') {
+    return a.logo_url ? `<img src="${esc(a.logo_url)}" alt="${esc(a.nombre)}" class="${h} max-w-[140px] object-contain" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'font-extrabold text-slate-600',textContent:${JSON.stringify(a.nombre)}}))">`
+        : `<span class="font-extrabold text-slate-600 text-sm">${esc(a.nombre)}</span>`;
+}
+function viewMetas() {
+    const y = state.dy;
+    const metas = (state.metas || []).filter(m => String(m.anio) === y).sort((a, b) => a.orden - b.orden || a.id - b.id);
+    const ausps = [...(state.auspiciadores || [])].sort((a, b) => a.nombre.localeCompare(b.nombre));
+    const auspTx = state.txs.filter(t => t.tipo === 'INGRESO' && t.subcategoria === 'AUSPICIO' && t.fecha.startsWith(y));
+    const totAusp = auspTx.reduce((a, t) => a + t.monto, 0);
+    const vig = ausps.filter(auspVigente);
+    const badge = e => ({ ACTIVO: 'bg-emerald-100 text-emerald-700', PENDIENTE: 'bg-amber-100 text-amber-700', VENCIDO: 'bg-rose-100 text-rose-700' }[e] || '');
+    return `<div class="card p-4 mb-4">
+        <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
+          <div><h2 class="font-bold text-slate-800 text-sm">Metas ${y}</h2><p class="text-[11px] text-slate-500">Gasto proyectado que el club necesita cubrir, en orden de prioridad. La equivalencia (opcional) traduce lo recaudado a algo tangible, ej. 1 hora de entrenamiento = $25.000.</p></div>
+          <button class="btn btn-p" onclick="abrirModal('meta')">+ Nueva meta</button></div>
+        <div class="overflow-x-auto scr"><table class="w-full text-xs min-w-[700px]"><thead class="text-[10px] uppercase text-slate-400 border-b"><tr>
+          <th class="py-1 text-left">#</th><th class="text-left">Meta</th><th class="text-right">Monto</th><th>Periodicidad</th><th class="text-right">Objetivo anual</th><th class="text-left pl-3">Equivalencia</th><th>Estado</th><th></th></tr></thead>
+          <tbody>${metas.map(m => `<tr class="border-b border-slate-50"><td class="py-1.5">${m.orden}</td><td><b>${esc(m.nombre)}</b><div class="text-[10px] text-slate-500">${esc(m.descripcion || '')}</div></td>
+            <td class="text-right mono">${fmt(m.monto_objetivo)}</td><td class="text-center text-[10px]">${m.periodicidad}</td><td class="text-right mono">${fmt(objetivoMeta(m, false))}</td>
+            <td class="pl-3 text-[11px]">${m.equivalencia_unidad ? `1 ${esc(m.equivalencia_unidad)} = ${fmt(m.equivalencia_costo)}` : '—'}</td>
+            <td class="text-center text-[10px] font-bold ${m.activa ? 'text-emerald-600' : 'text-slate-400'}">${m.activa ? 'Activa' : 'Inactiva'}</td>
+            <td class="text-right"><button class="text-[11px] font-bold text-sky-700 hover:underline" onclick="abrirModal('meta', ${m.id})">Editar</button></td></tr>`).join('')
+            || `<tr><td colspan="8" class="p-4 text-center text-slate-400">Sin metas para ${y}. Ej.: Meta 1 Arriendo de pista · Meta 2 Indumentaria · Meta 3 Fondo para torneos.</td></tr>`}</tbody></table></div>
+      </div>
+      <div class="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-4">
+        <div class="card p-4"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">Total ingreso auspicios ${y} (al ${new Date().toLocaleDateString('es-CL')})</p><p class="text-2xl font-extrabold" style="color:#3b82f6">${fmt(totAusp)}</p><p class="text-[10px] text-slate-500">${auspTx.length} movimientos bancarios</p></div>
+        <div class="card p-4"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">Auspiciadores activos</p><p class="text-2xl font-extrabold text-slate-800">${vig.length}</p><p class="text-[10px] text-slate-500">de ${ausps.length} registrados</p></div>
+        <div class="card p-4"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">Valor comprometido vigente</p><p class="text-2xl font-extrabold text-slate-800">${fmt(vig.reduce((a, x) => a + Number(x.monto_comprometido || 0), 0))}</p><p class="text-[10px] text-slate-500">dinero + especie + beneficios (estimado)</p></div>
+      </div>
+      <div class="card p-4 mb-4">
+        <div class="flex flex-wrap justify-between items-center gap-2 mb-3"><div><h2 class="font-bold text-slate-800 text-sm">Directorio de auspiciadores</h2>
+          <p class="text-[11px] text-slate-500">El "texto en glosa" permite reconocer sus transferencias automáticamente al subir cartolas.</p></div>
+          <button class="btn btn-p" onclick="abrirModal('ausp')">+ Nuevo auspiciador</button></div>
+        <div class="overflow-x-auto scr"><table class="w-full text-xs min-w-[760px]"><thead class="text-[10px] uppercase text-slate-400 border-b"><tr>
+          <th class="py-1 text-left">Empresa / marca</th><th class="text-left">Convenio</th><th class="text-left">Nivel</th><th class="text-right">Valor estimado</th><th class="text-right">Recibido ${y}</th><th>Vigencia</th><th>Estado</th><th></th></tr></thead>
+          <tbody>${ausps.map(a => { const e = estadoAusp(a); const rec = auspTx.filter(t => t.auspiciador_id === a.id).reduce((s, t) => s + t.monto, 0);
+            return `<tr class="border-b border-slate-50"><td class="py-1.5 font-bold">${esc(a.nombre)}${a.visible_publico ? '' : ' <span class="text-[9px] text-slate-400 font-normal">(no público)</span>'}</td>
+            <td>${TIPOS_AUSP[a.tipo] || a.tipo}</td><td>${NIVELES[a.nivel] || a.nivel}</td><td class="text-right mono">${fmt(a.monto_comprometido)}</td><td class="text-right mono">${fmt(rec)}</td>
+            <td class="text-center text-[10px] mono">${a.fecha_inicio || '—'} → ${a.fecha_termino || 'indef.'}</td>
+            <td class="text-center"><span class="text-[9px] font-bold px-1.5 py-0.5 rounded ${badge(e)}">${e}</span></td>
+            <td class="text-right"><button class="text-[11px] font-bold text-sky-700 hover:underline" onclick="abrirModal('ausp', ${a.id})">Editar</button></td></tr>`; }).join('')
+            || '<tr><td colspan="8" class="p-4 text-center text-slate-400">Aún no hay auspiciadores registrados.</td></tr>'}</tbody></table></div>
+      </div>
+      <div class="card p-4"><h2 class="font-bold text-slate-800 text-sm mb-3">Nos acompañan (banner de reconocimiento)</h2>
+        ${vig.filter(a => a.visible_publico).length ? `<div class="flex flex-wrap items-center justify-center gap-6 py-4 bg-slate-50 rounded-xl">${vig.filter(a => a.visible_publico)
+          .sort((a, b) => Object.keys(NIVELES).indexOf(a.nivel) - Object.keys(NIVELES).indexOf(b.nivel)).map(a => `<div class="text-center">${logoAusp(a, a.nivel === 'SPONSOR_OFICIAL' ? 'h-16' : 'h-10')}<p class="text-[9px] uppercase tracking-wider text-slate-400 mt-1">${NIVELES[a.nivel]}</p></div>`).join('')}</div>`
+          : '<p class="text-xs text-slate-400">Los auspiciadores activos y visibles aparecerán aquí y en la página pública.</p>'}
+      </div>`;
+}
+function abrirModal(tipo, id = null) { state.modal = { tipo, id }; render(); }
+function cerrarModal() { state.modal = null; render(); }
+function viewModal() {
+    const md = state.modal; if (!md) return '';
+    const campo = (label, input) => `<label class="text-[10px] font-bold text-slate-500 block">${label}${input}</label>`;
+    let titulo, cuerpo, sinGuardar = false;
+    if (md.tipo === 'recordar') { ({ titulo, cuerpo, sinGuardar } = modalRecordar(md, campo)); }
+    else if (md.tipo === 'config') { ({ titulo, cuerpo } = modalConfigCobranza(campo)); }
+    else if (md.tipo === 'apertura') {
+        const a = (state.aperturas || []).find(x => x.socio_id === md.id); const so = socioById(md.id);
+        titulo = 'Ajustar saldo de apertura';
+        cuerpo = `<p class="text-sm font-bold text-slate-800 mb-1">${esc(so?.nombre)}</p>
+          <p class="text-[11px] text-slate-500 mb-3">Calculado con los datos 2025: <b class="mono">${fmt(a.saldo_calculado)}</b> · actual: <b class="mono">${fmt(a.saldo)}</b> · ${a.aprobado ? 'aprobado ' + esc(a.acta || '') : 'pendiente'}.
+          Negativo = deuda, positivo = saldo a favor, 0 = al día al 31/12/2025.</p>
+          <div class="grid grid-cols-2 gap-3">
+            ${campo('Nuevo saldo al 31/12/2025', `<input name="saldo" type="number" step="1" required class="inp w-full mt-1 mono" value="${a.saldo}">`)}
+            <div class="flex items-end gap-1"><button type="button" class="btn btn-g w-full" onclick="this.form.saldo.value=0">Dejar al día (0)</button></div>
+            <div class="col-span-2">${campo('Motivo del ajuste (obligatorio, queda registrado)', `<input name="observacion" required class="inp w-full mt-1" value="${esc(a.observacion || '')}" placeholder="ej. pagó 2 cuotas en efectivo, acta 12-11">`)}</div>
+          </div>`;
+    } else if (md.tipo === 'meta') {
+        const m = (state.metas || []).find(x => x.id === md.id) || { anio: state.dy, orden: ((state.metas || []).filter(x => String(x.anio) === state.dy).length + 1), periodicidad: 'ANUAL', activa: true };
+        titulo = md.id ? 'Editar meta' : 'Nueva meta';
+        cuerpo = `<div class="grid grid-cols-2 gap-3">
+          ${campo('Nombre', `<input name="nombre" required class="inp w-full mt-1" value="${esc(m.nombre || '')}" placeholder="Arriendo de pista">`)}
+          ${campo('Orden de prioridad', `<input name="orden" type="number" min="1" class="inp w-full mt-1" value="${m.orden}">`)}
+          <div class="col-span-2">${campo('Descripción (opcional)', `<input name="descripcion" class="inp w-full mt-1" value="${esc(m.descripcion || '')}">`)}</div>
+          ${campo('Monto objetivo', `<input name="monto_objetivo" type="number" min="1" required class="inp w-full mt-1" value="${m.monto_objetivo || ''}">`)}
+          ${campo('Periodicidad', `<select name="periodicidad" class="inp w-full mt-1">${['MENSUAL', 'ANUAL'].map(p => `<option ${m.periodicidad === p ? 'selected' : ''}>${p}</option>`).join('')}</select>`)}
+          ${campo('Equivalencia: unidad (opcional)', `<input name="equivalencia_unidad" class="inp w-full mt-1" value="${esc(m.equivalencia_unidad || '')}" placeholder="hora de entrenamiento">`)}
+          ${campo('Costo por unidad', `<input name="equivalencia_costo" type="number" min="1" class="inp w-full mt-1" value="${m.equivalencia_costo || ''}">`)}
+          ${campo('Año', `<input name="anio" type="number" class="inp w-full mt-1" value="${m.anio}">`)}
+          <label class="text-xs flex items-center gap-2 mt-5"><input type="checkbox" name="activa" ${m.activa ? 'checked' : ''}> Activa</label></div>`;
+    } else {
+        const a = (state.auspiciadores || []).find(x => x.id === md.id) || { tipo: 'MONETARIO', nivel: 'COLABORADOR', estado: 'ACTIVO', visible_publico: true, monto_comprometido: 0 };
+        titulo = md.id ? 'Editar auspiciador' : 'Nuevo auspiciador';
+        const sel = (name, opts, v) => `<select name="${name}" class="inp w-full mt-1">${Object.entries(opts).map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+        cuerpo = `<div class="grid grid-cols-2 gap-3">
+          <div class="col-span-2">${campo('Empresa o marca', `<input name="nombre" required class="inp w-full mt-1" value="${esc(a.nombre || '')}">`)}</div>
+          ${campo('Tipo de convenio', sel('tipo', TIPOS_AUSP, a.tipo))}
+          ${campo('Nivel', sel('nivel', NIVELES, a.nivel))}
+          ${campo('Valor anual estimado (CLP)', `<input name="monto_comprometido" type="number" min="0" class="inp w-full mt-1" value="${a.monto_comprometido || 0}">`)}
+          ${campo('Estado', sel('estado', { ACTIVO: 'Activo', PENDIENTE: 'Pendiente', VENCIDO: 'Vencido' }, a.estado))}
+          ${campo('Inicio contrato', `<input name="fecha_inicio" type="date" class="inp w-full mt-1" value="${a.fecha_inicio || ''}">`)}
+          ${campo('Término contrato', `<input name="fecha_termino" type="date" class="inp w-full mt-1" value="${a.fecha_termino || ''}">`)}
+          <div class="col-span-2">${campo('Texto en glosa bancaria (para reconocer sus pagos)', `<input name="alias_banco" class="inp w-full mt-1" value="${esc(a.alias_banco || '')}" placeholder="ej. TEF DE BICICLETAS XYZ SPA">`)}</div>
+          <div class="col-span-2">${campo('URL del logo (opcional)', `<input name="logo_url" class="inp w-full mt-1" value="${esc(a.logo_url || '')}" placeholder="https://...">`)}</div>
+          ${campo('Sitio web', `<input name="sitio_url" class="inp w-full mt-1" value="${esc(a.sitio_url || '')}">`)}
+          ${campo('Contacto (solo directiva)', `<input name="contacto" class="inp w-full mt-1" value="${esc(a.contacto || '')}">`)}
+          <label class="text-xs flex items-center gap-2 col-span-2"><input type="checkbox" name="visible_publico" ${a.visible_publico ? 'checked' : ''}> Mostrar en la página pública</label></div>`;
+    }
+    return `<div class="fixed inset-0 bg-slate-900/40 z-50 flex items-center justify-center p-4" onclick="if(event.target===this)cerrarModal()">
+      <form onsubmit="guardarModal(event)" class="card p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div class="flex justify-between items-center mb-4"><h2 class="font-bold text-slate-800">${titulo}</h2><button type="button" class="text-slate-400 text-lg" onclick="cerrarModal()">×</button></div>
+        ${cuerpo}
+        <div class="flex justify-between mt-5">${md.id ? `<button type="button" class="btn btn-g text-rose-600" onclick="eliminarModal()">Eliminar</button>` : '<span></span>'}
+          <div class="flex gap-2"><button type="button" class="btn btn-g" onclick="cerrarModal()">${sinGuardar ? 'Cerrar' : 'Cancelar'}</button>${sinGuardar ? '' : '<button class="btn btn-p">Guardar</button>'}</div></div>
+      </form></div>`;
+}
+async function guardarModal(ev) {
+    ev.preventDefault();
+    const f = new FormData(ev.target), v = k => (f.get(k) ?? '').toString().trim(), num = k => v(k) === '' ? null : parseInt(v(k));
+    const md = state.modal; let tabla, rec;
+    if (md.tipo === 'config') {
+        const keys = ['banco', 'tipo_cuenta', 'numero_cuenta', 'titular', 'rut_titular', 'email_comprobante', 'plantilla_mensaje'];
+        const upd = Object.fromEntries(keys.map(k => [k, (f.get(k) ?? '').toString()])); upd.updated_at = new Date().toISOString();
+        return withBusy('Guardando...', async () => {
+            const { error } = await sb.from('config_club').update(upd).eq('id', 1); if (error) throw error;
+            state.modal = null; await loadAll(); toast('Datos de cobranza guardados');
+        });
+    }
+    if (md.tipo === 'apertura') {
+        const saldo = parseInt(v('saldo')), obs = v('observacion');
+        if (isNaN(saldo) || !obs) return toast('Indica el saldo y el motivo del ajuste', 'err');
+        const nota = `${obs} (ajuste ${new Date().toLocaleDateString('es-CL')}, ${state.me?.nombre || 'admin'})`;
+        return withBusy('Guardando ajuste...', async () => {
+            const { error } = await sb.from('saldos_apertura').update({ saldo, observacion: nota, updated_at: new Date().toISOString() }).eq('socio_id', md.id);
+            if (error) throw error; state.modal = null; await loadAll(); toast('Saldo de apertura ajustado');
+        });
+    }
+    if (md.tipo === 'meta') {
+        tabla = 'metas';
+        rec = { nombre: v('nombre'), descripcion: v('descripcion') || null, orden: num('orden') || 1, monto_objetivo: num('monto_objetivo'), periodicidad: v('periodicidad'),
+                equivalencia_unidad: v('equivalencia_unidad') || null, equivalencia_costo: num('equivalencia_costo'), anio: num('anio'), activa: f.get('activa') === 'on' };
+        if (!rec.nombre || !rec.monto_objetivo) return toast('Nombre y monto son obligatorios', 'err');
+        if (rec.equivalencia_unidad && !rec.equivalencia_costo) return toast('Indica el costo por unidad de la equivalencia', 'err');
+    } else {
+        tabla = 'auspiciadores';
+        rec = { nombre: v('nombre'), tipo: v('tipo'), nivel: v('nivel'), monto_comprometido: num('monto_comprometido') || 0, estado: v('estado'),
+                fecha_inicio: v('fecha_inicio') || null, fecha_termino: v('fecha_termino') || null, alias_banco: v('alias_banco') || null,
+                logo_url: v('logo_url') || null, sitio_url: v('sitio_url') || null, contacto: v('contacto') || null, visible_publico: f.get('visible_publico') === 'on' };
+        if (!rec.nombre) return toast('El nombre es obligatorio', 'err');
+    }
+    await withBusy('Guardando...', async () => {
+        const q = md.id ? sb.from(tabla).update(rec).eq('id', md.id) : sb.from(tabla).insert(rec);
+        const { error } = await q; if (error) throw error;
+        state.modal = null; await loadAll(); toast('Guardado');
+    });
+}
+async function eliminarModal() {
+    const md = state.modal; if (!md?.id || !confirm('¿Eliminar este registro?')) return;
+    await withBusy('Eliminando...', async () => {
+        const { error } = await sb.from(md.tipo === 'meta' ? 'metas' : 'auspiciadores').delete().eq('id', md.id);
+        if (error) throw error; state.modal = null; await loadAll();
+    });
+}
+
+// ============================================================
+// COBRANZA: recordatorio al socio deudor (WhatsApp / email / copiar)
+// El mensaje se arma con la plantilla de config_club; el envío lo confirma
+// el tesorero en WhatsApp o en su correo, y queda registrado en recordatorios.
+// ============================================================
+const MESES_LARGOS = MFULL;
+function datosTransferencia(c) {
+    return [`Banco: ${c.banco}`, `Tipo de cuenta: ${c.tipo_cuenta}`, `N° de cuenta: ${c.numero_cuenta}`, `Titular: ${c.titular}`, `RUT: ${c.rut_titular}`, `Email: ${c.email_comprobante}`].join('\n');
+}
+function detalleDeuda(s) {
+    const meses = Object.entries(s.monthMap).filter(([, m]) => m.st === 'unpaid').map(([abs]) => {
+        const a = parseInt(abs), y = Math.floor((a - 1) / 12), m = ((a - 1) % 12) + 1; return `${MESES_LARGOS[m - 1].toLowerCase()} ${y}`; });
+    const d = []; if (s.saldoApertura < 0 && meses.length < s.impagos) d.push('saldo 2025');
+    return d.concat(meses).join(', ') || 'cuotas pendientes';
+}
+function mensajeCobranza(s) {
+    const c = state.config || {};
+    const primerNombre = String(s.nombre || '').trim().split(/\s+/)[0];
+    return String(c.plantilla_mensaje || '')
+        .replaceAll('{nombre}', primerNombre).replaceAll('{nombre_completo}', s.nombre)
+        .replaceAll('{meses}', String(s.impagos)).replaceAll('{detalle}', detalleDeuda(s))
+        .replaceAll('{deuda}', fmt(s.deuda)).replaceAll('{cuota}', fmt(s.cuota_mensual ?? CUOTA_BASE))
+        .replaceAll('{datos_transferencia}', datosTransferencia(c)).replaceAll('{email}', c.email_comprobante || '');
+}
+const ultimoRecordatorio = id => (state.recordatorios || []).filter(r => r.socio_id === id).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+const fechaCorta = iso => new Date(iso).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' });
+async function enviarRecordatorio(canal) {
+    const s = computeEstado().find(x => x.id === state.modal.id);
+    const txt = document.getElementById('msgCobranza')?.value || mensajeCobranza(s);
+    if (canal === 'WHATSAPP') {
+        if (!s.telefono) return toast('Este socio no tiene teléfono registrado (pestaña Socios)', 'err');
+        window.open(`https://wa.me/${s.telefono}?text=${encodeURIComponent(txt)}`, '_blank');
+    } else if (canal === 'EMAIL') {
+        if (!s.email) return toast('Este socio no tiene email registrado', 'err');
+        window.location.href = `mailto:${s.email}?subject=${encodeURIComponent('Recordatorio de cuotas · Club Ciclista Santiago Pista')}&body=${encodeURIComponent(txt)}`;
+    } else {
+        try { await navigator.clipboard.writeText(txt); } catch (e) { return toast('No se pudo copiar: selecciona el texto y cópialo a mano', 'err'); }
+    }
+    const { data, error } = await sb.from('recordatorios').insert({ socio_id: s.id, canal, deuda: s.deuda, meses: s.impagos, mensaje: txt, enviado_por: state.me?.id || null }).select().single();
+    if (error) toast('Mensaje generado, pero no se pudo registrar: ' + error.message, 'warn');
+    else { state.recordatorios.push(data); toast(canal === 'COPIA' ? 'Mensaje copiado y registrado' : 'Recordatorio registrado'); }
+    state.modal = null; render();
+}
+function modalRecordar(md, campo) {
+    const s = computeEstado().find(x => x.id === md.id); const ult = ultimoRecordatorio(md.id);
+    const hist = (state.recordatorios || []).filter(r => r.socio_id === md.id).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 5);
+    return { titulo: 'Recordar cuotas pendientes', cuerpo: `
+      <div class="flex flex-wrap justify-between gap-2 mb-2"><div><p class="text-sm font-bold text-slate-800">${esc(s.nombre)}</p>
+        <p class="text-[11px] text-slate-500">${s.impagos} cuota(s) · <b class="text-rose-600">${fmt(s.deuda)}</b> · ${esc(detalleDeuda(s))}</p></div>
+        <div class="text-[10px] text-slate-500 text-right">📱 ${s.telefono ? '+' + esc(s.telefono) : '<span class="text-rose-500">sin teléfono</span>'}<br>✉️ ${esc(s.email || 'sin email')}</div></div>
+      ${ult ? `<p class="text-[10px] bg-amber-50 text-amber-800 rounded px-2 py-1 mb-2">Último recordatorio: ${fechaCorta(ult.created_at)} por ${ult.canal.toLowerCase()} (deuda ${fmt(ult.deuda)})</p>` : ''}
+      ${campo('Mensaje (puedes editarlo antes de enviar)', `<textarea id="msgCobranza" rows="13" class="inp w-full mt-1 !text-[12px] leading-snug">${esc(mensajeCobranza(s))}</textarea>`)}
+      <div class="grid grid-cols-3 gap-2 mt-3">
+        <button type="button" class="btn text-white" style="background:#22c55e" ${s.telefono ? '' : 'disabled'} onclick="enviarRecordatorio('WHATSAPP')">WhatsApp</button>
+        <button type="button" class="btn btn-p" ${s.email ? '' : 'disabled'} onclick="enviarRecordatorio('EMAIL')">Email</button>
+        <button type="button" class="btn btn-g" onclick="enviarRecordatorio('COPIA')">Copiar</button></div>
+      ${hist.length ? `<p class="text-[10px] text-slate-400 mt-3">Historial: ${hist.map(h => `${fechaCorta(h.created_at)} ${h.canal.toLowerCase()}`).join(' · ')}</p>` : ''}`, sinGuardar: true };
+}
+function modalConfigCobranza(campo) {
+    const c = state.config || {};
+    const f = (k, l) => campo(l, `<input name="${k}" required class="inp w-full mt-1" value="${esc(c[k] || '')}">`);
+    return { titulo: 'Datos de transferencia y mensaje', cuerpo: `<div class="grid grid-cols-2 gap-3">
+        ${f('banco', 'Banco')}${f('tipo_cuenta', 'Tipo de cuenta')}${f('numero_cuenta', 'N° de cuenta')}${f('titular', 'Titular')}${f('rut_titular', 'RUT titular')}${f('email_comprobante', 'Email para comprobantes')}
+        <div class="col-span-2">${campo('Plantilla del mensaje', `<textarea name="plantilla_mensaje" rows="12" class="inp w-full mt-1 !text-[12px] leading-snug">${esc(c.plantilla_mensaje || '')}</textarea>`)}
+        <p class="text-[10px] text-slate-500 mt-1">Variables: {nombre} {nombre_completo} {meses} {detalle} {deuda} {cuota} {datos_transferencia} {email}</p></div></div>` };
+}
+
+function render() {
+    const root = document.getElementById('root');
+    if (state.loading) { root.innerHTML = `<div class="min-h-screen flex items-center justify-center"><div class="w-10 h-10 border-4 border-slate-200 rounded-full sp" style="border-top-color:var(--navy)"></div></div>`; return; }
+    if (!state.session) { root.innerHTML = viewLogin(state.loginMsg); return; }
+    if (!state.me || !['admin','directiva'].includes(state.me.rol)) {
+        root.innerHTML = viewLogin('Tu usuario no está vinculado a un socio con rol admin/directiva. Revisa el bootstrap del primer admin en schema.sql.');
+        return;
+    }
+    const tabs = [['dashboard','Dashboard'], ['metas','Metas y Auspicios'], ['cartola','Subir cartola'], ['conciliacion','Conciliación'], ['estado','Estado de cuotas'], ['socios','Socios']];
+    const body = { dashboard: viewDashboard, metas: viewMetas, cartola: viewCartola, conciliacion: viewConciliacion, estado: viewEstado, socios: viewSocios }[state.tab]();
+    root.innerHTML = `<div class="min-h-screen">
+      <div class="sticky top-0 z-40" style="background:var(--navy)">
+        <div class="max-w-[1700px] mx-auto px-3 sm:px-4 py-2 sm:py-2.5 flex flex-col lg:flex-row lg:items-center justify-between gap-2">
+          <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-lg flex items-center justify-center font-black text-white text-sm" style="background:var(--orange)">SP</div>
+            <div><h1 class="text-white font-extrabold text-sm leading-tight">Conciliación Bancaria</h1>
+              <p class="text-slate-400 text-[9px] uppercase tracking-wider">CCSP · BancoEstado</p></div>
+            <button onclick="doLogout()" class="lg:hidden ml-auto text-slate-300 hover:text-white text-[11px] font-bold px-2 py-1">Salir</button>
+          </div>
+          <div class="flex items-center gap-1 overflow-x-auto scr whitespace-nowrap -mx-3 px-3 lg:mx-0 lg:px-0 pb-1 lg:pb-0">
+            ${tabs.map(([k,l]) => `<button onclick="setState({tab:'${k}'});window.scrollTo(0,0)" class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold ${state.tab === k ? 'bg-white text-slate-800' : 'text-slate-300 hover:text-white'}">${l}</button>`).join('')}
+            <span class="hidden lg:inline text-slate-400 text-[10px] ml-3">${esc(state.me.nombre)}</span>
+            <button onclick="doLogout()" class="hidden lg:inline text-slate-300 hover:text-white text-[10px] font-bold ml-2">Salir</button>
+          </div>
+        </div>
+      </div>
+      <div class="max-w-[1700px] mx-auto px-2 sm:px-4 py-4">${body}</div>
+      ${viewModal()}
+      ${state.busy ? `<div class="fixed inset-0 bg-slate-900/30 z-50 flex items-center justify-center"><div class="card px-5 py-4 flex items-center gap-3">
+        <div class="w-5 h-5 border-2 border-slate-200 rounded-full sp" style="border-top-color:var(--navy)"></div><span class="text-sm font-medium text-slate-700">${esc(state.busy)}</span></div></div>` : ''}
+    </div>`;
+}
+
+function setState(patch) { Object.assign(state, patch); render(); }
+function setCf(k, v) { state.cf[k] = v; if (k !== 'page') state.cf.page = 0; else state.cf.page = parseInt(v); render(); }
+
+// ============================================================
+// AUTENTICACIÓN
+// ============================================================
+async function doLogin(ev) {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const { error } = await sb.auth.signInWithPassword({ email: f.get('email'), password: f.get('password') });
+    if (error) { state.loginMsg = error.message; render(); }
+}
+async function doLogout() { await sb.auth.signOut(); }
+
+async function onSession(session) {
+    state.session = session; state.me = null; state.loginMsg = '';
+    if (session) {
+        state.loading = true; render();
+        try {
+            const { data } = await sb.from('socios').select('*').eq('auth_user_id', session.user.id).maybeSingle();
+            state.me = data;
+            if (data && ['admin','directiva'].includes(data.rol)) await loadAll();
+        } catch (e) { toast(`Error cargando datos: ${e.message}`, 'err'); }
+    }
+    state.loading = false; render();
+}
+
+async function init() {
+    if (!CONFIG_OK) { state.loading = false; render(); return; }
+    const { data } = await sb.auth.getSession();
+    await onSession(data.session);
+    sb.auth.onAuthStateChange((ev, session) => {
+        // Evita recargas cuando Supabase re-emite SIGNED_IN para el mismo usuario (refresh de token / foco)
+        if (ev === 'SIGNED_OUT' || (ev === 'SIGNED_IN' && session?.user?.id !== state.session?.user?.id)) onSession(session);
+    });
+}
+init();
+</script>
+</body>
+</html>
