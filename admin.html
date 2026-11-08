@@ -1622,11 +1622,14 @@ function render() {
             <div class="w-8 h-8 rounded-lg flex items-center justify-center font-black text-white text-sm" style="background:var(--orange)">SP</div>
             <div><h1 class="text-white font-extrabold text-sm leading-tight">Conciliación Bancaria</h1>
               <p class="text-slate-400 text-[9px] uppercase tracking-wider">CCSP · BancoEstado</p></div>
-            <button onclick="doLogout()" class="lg:hidden ml-auto text-slate-300 hover:text-white text-[11px] font-bold px-2 py-1">Salir</button>
+            <span class="lg:hidden ml-auto text-[9px] font-bold uppercase px-2 py-0.5 rounded-full ${ro ? 'bg-sky-500/20 text-sky-200' : 'bg-orange-500/20 text-orange-200'}">${ro ? 'Directiva' : 'Tesorería'}</span>
+            <button onclick="doLogout()" class="lg:hidden text-slate-300 hover:text-white text-[11px] font-bold px-2 py-1">Salir</button>
           </div>
           <div class="flex items-center gap-1 overflow-x-auto scr whitespace-nowrap -mx-3 px-3 lg:mx-0 lg:px-0 pb-1 lg:pb-0">
             ${tabs.map(([k,l]) => `<button onclick="setState({tab:'${k}'});window.scrollTo(0,0)" class="shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold ${state.tab === k ? 'bg-white text-slate-800' : 'text-slate-300 hover:text-white'}">${l}</button>`).join('')}
             <span class="hidden lg:inline text-slate-400 text-[10px] ml-3">${esc(state.me.nombre)}</span>
+            <span class="hidden lg:inline text-[9px] font-bold uppercase tracking-wider ml-2 px-2 py-0.5 rounded-full ${ro ? 'bg-sky-500/20 text-sky-200' : 'bg-orange-500/20 text-orange-200'}">${ro ? 'Directiva · consulta' : 'Tesorería · admin'}</span>
+            <a href="publico.html" target="_blank" class="hidden lg:inline text-slate-400 hover:text-white text-[10px] font-bold ml-3">Vista socios ↗</a>
             <button onclick="doLogout()" class="hidden lg:inline text-slate-300 hover:text-white text-[10px] font-bold ml-2">Salir</button>
           </div>
         </div>
