@@ -30,7 +30,7 @@ const CONFIG = {
 const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 const MS = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 const NIVELES = { SPONSOR_OFICIAL: 'Sponsor Oficial', PARTNER: 'Partner', COLABORADOR: 'Colaborador' };
-const state = { anio: Math.max(2026, new Date().getFullYear()), data: null, error: '' };
+const state = { anio: Math.max(2026, new Date().getFullYear()), data: null, error: '', mes: null, verTodos: false };
 
 const fmt = v => new Intl.NumberFormat('es-CL', { style:'currency', currency:'CLP', maximumFractionDigits:0 }).format(v || 0);
 const fmtK = v => v >= 1e6 ? '$' + (v / 1e6).toLocaleString('es-CL', { maximumFractionDigits:1 }) + 'M' : v >= 1e3 ? '$' + Math.round(v / 1e3) + 'K' : '$' + v;
@@ -59,8 +59,53 @@ function donut(parts) {
 const pluralUnidad = (u, n) => { u = u || 'unidad'; if (n === 1) return u; const [p, ...r] = u.split(' '); return [p + (/[aeiouáéíóú]$/i.test(p) ? 's' : 'es'), ...r].join(' '); };
 const PALETA = ['#1e293b', '#22c55e', '#E8572A', '#3b82f6', '#a855f7', '#f59e0b', '#14b8a6', '#94a3b8'];
 
+function verMes(m) { state.mes = m; state.verTodos = false; render(); document.getElementById('flujo-mes')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+
+// Flujo de caja del mes: qué entró, qué salió y en qué se usó (sin glosas bancarias)
+function viewFlujoMes(d, mes) {
+    if (!mes) return '';
+    const MESES_L = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    const m = (d.mensual || []).find(x => x.mes === mes) || { cuotas: 0, auspicios: 0, otros: 0, egresos: 0 };
+    const entro = Number(m.cuotas) + Number(m.auspicios) + Number(m.otros), salio = Number(m.egresos), neto = entro - salio;
+    const sal = (d.saldos_mes || []).find(x => x.mes === mes);
+    const egrMes = (d.egresos_detalle || []).filter(x => x.mes === mes);
+    const porCat = {}; egrMes.forEach(x => porCat[x.categoria] = (porCat[x.categoria] || 0) + Number(x.monto));
+    const cats = Object.entries(porCat).sort((a, b) => b[1] - a[1]); const maxC = Math.max(1, ...cats.map(c => c[1]));
+    const colorCat = {}; cats.forEach(([k], i) => colorCat[k] = PALETA[i % PALETA.length]);
+    const hoy = new Date(); const enCurso = d.anio === hoy.getFullYear() && mes === hoy.getMonth() + 1;
+    const lista = state.verTodos ? egrMes : egrMes.slice(0, 12);
+    const kpi = (t, v, c, sub = '') => `<div class="rounded-xl bg-slate-50 p-3"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400">${t}</p><p class="text-lg font-extrabold mono" style="color:${c}">${v}</p>${sub ? `<p class="text-[10px] text-slate-500">${sub}</p>` : ''}</div>`;
+    return `<section id="flujo-mes" class="card p-5 mb-5">
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <h2 class="font-extrabold text-slate-800">Flujo de caja · ${MESES_L[mes - 1]} ${d.anio}${enCurso ? ' <span class="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full align-middle">mes en curso</span>' : ''}</h2>
+        <select class="border border-slate-200 rounded-lg text-xs font-bold px-2 py-1.5" onchange="verMes(parseInt(this.value))">
+          ${(d.mensual || []).map(x => `<option value="${x.mes}" ${x.mes === mes ? 'selected' : ''}>${MS[x.mes - 1]} ${d.anio}</option>`).join('')}</select>
+      </div>
+      <p class="text-xs text-slate-500 mb-4">En qué se usó la plata del club este mes. Se muestran categorías y montos; no se publican nombres ni glosas bancarias.</p>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        ${kpi('Entró', fmt(entro), '#1e293b', `Cuotas ${fmt(m.cuotas)}`)}
+        ${kpi('Salió', fmt(salio), '#E8572A', `${egrMes.length} desembolso${egrMes.length === 1 ? '' : 's'}`)}
+        ${kpi('Resultado del mes', (neto >= 0 ? '+' : '') + fmt(neto), neto >= 0 ? '#16a34a' : '#ef4444', neto >= 0 ? 'Entró más de lo que salió' : 'Salió más de lo que entró')}
+        ${kpi('Saldo en el banco', sal ? fmt(sal.saldo) : '—', '#22c55e', sal ? 'al ' + sal.fecha.split('-').reverse().join('/') : 'Sin cartola del banco')}
+      </div>
+      ${egrMes.length ? `<div class="grid lg:grid-cols-2 gap-6">
+        <div><h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Por categoría</h3>
+          ${cats.map(([k, v]) => `<div class="mb-2"><div class="flex justify-between text-xs mb-0.5"><span class="text-slate-600 truncate">${esc(k)}</span><span class="mono font-bold">${fmt(v)} <span class="text-slate-400 font-normal">${Math.round(v / salio * 100)}%</span></span></div>
+            <div class="h-2.5 bg-slate-100 rounded-full"><div class="h-full rounded-full" style="width:${(v / maxC * 100).toFixed(1)}%;background:${colorCat[k]}"></div></div></div>`).join('')}</div>
+        <div><h3 class="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Desembolsos ${state.verTodos || egrMes.length <= 12 ? '' : `(últimos 12 de ${egrMes.length})`}</h3>
+          <div class="divide-y divide-slate-100">${lista.map(x => `<div class="flex items-center gap-3 py-1.5 text-xs">
+              <span class="mono text-slate-400 w-12 shrink-0">${x.fecha.slice(8, 10)}/${x.fecha.slice(5, 7)}</span>
+              <span class="w-2 h-2 rounded-full shrink-0" style="background:${colorCat[x.categoria]}"></span>
+              <span class="text-slate-700 truncate flex-1">${esc(x.categoria)}</span>
+              <span class="mono font-bold">${fmt(x.monto)}</span></div>`).join('')}</div>
+          ${egrMes.length > 12 ? `<button class="mt-2 text-[11px] font-bold text-sky-700 hover:underline" onclick="state.verTodos=!state.verTodos;render()">${state.verTodos ? 'Ver menos' : `Ver los ${egrMes.length} desembolsos`}</button>` : ''}
+        </div></div>`
+      : '<p class="text-sm text-slate-400">No hubo desembolsos registrados este mes.</p>'}
+    </section>`;
+}
+
 async function cargar() {
-    state.data = null; state.error = ''; render();
+    state.data = null; state.error = ''; state.mes = null; state.verTodos = false; render();
     const { data, error } = await sb.rpc('resumen_publico', { p_anio: state.anio });
     if (error) state.error = error.message; else state.data = data;
     render();
@@ -90,6 +135,8 @@ function render() {
     const maxE = Math.max(1, ...egrList.map(x => x[1]));
     const mens = d.mensual || []; const maxM = Math.max(1, ...mens.map(m => Math.max(m.cuotas + m.auspicios + m.otros, m.egresos)));
     const ausp = d.auspiciadores || [];
+    const mesesConDatos = mens.map(m => m.mes);
+    const mesSel = mesesConDatos.includes(state.mes) ? state.mes : mesesConDatos[mesesConDatos.length - 1];
     const kpi = (t, v, s, c) => `<div class="card p-4"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400 mb-1">${t}</p><p class="text-xl md:text-2xl font-extrabold" style="color:${c}">${v}</p><p class="text-[11px] text-slate-500 mt-1">${s}</p></div>`;
 
     root.innerHTML = header + `<main class="max-w-6xl mx-auto px-3 md:px-4 py-5">
@@ -135,10 +182,13 @@ function render() {
       <section class="card p-5 mb-5"><h2 class="font-extrabold text-slate-800 mb-1">Mes a mes</h2>
         <p class="text-[11px] text-slate-500 mb-3"><span class="inline-block w-2.5 h-2.5 rounded-sm align-middle" style="background:#1e293b"></span> Ingresos &nbsp; <span class="inline-block w-2.5 h-2.5 rounded-sm align-middle" style="background:#E8572A"></span> Egresos</p>
         <div class="flex items-end gap-1 md:gap-2 h-40 overflow-x-auto">${mens.map(m => { const i = m.cuotas + m.auspicios + m.otros;
-          return `<div class="flex-1 min-w-[28px] flex flex-col items-center"><div class="flex items-end gap-0.5 h-32 w-full justify-center">
+          return `<div class="flex-1 min-w-[28px] flex flex-col items-center cursor-pointer rounded-md ${m.mes === mesSel ? 'bg-slate-100' : 'hover:bg-slate-50'}" onclick="verMes(${m.mes})" title="Ver flujo de ${MS[m.mes - 1]}"><div class="flex items-end gap-0.5 h-32 w-full justify-center">
             <div class="w-1/2 max-w-[18px] rounded-t" style="height:${Math.max(2, i / maxM * 128)}px;background:#1e293b" title="Ingresos ${fmt(i)}"></div>
             <div class="w-1/2 max-w-[18px] rounded-t" style="height:${Math.max(2, m.egresos / maxM * 128)}px;background:#E8572A" title="Egresos ${fmt(m.egresos)}"></div></div>
-            <span class="text-[9px] text-slate-500 mt-1">${MS[m.mes - 1]}</span></div>`; }).join('')}</div></section>
+            <span class="text-[9px] mt-1 ${m.mes === mesSel ? 'font-extrabold text-slate-800' : 'text-slate-500'}">${MS[m.mes - 1]}</span></div>`; }).join('')}</div>
+        <p class="text-[10px] text-slate-400 mt-2">Toca un mes para ver su detalle abajo.</p></section>
+
+      ${viewFlujoMes(d, mesSel)}
 
       ${ausp.length ? `<section class="card p-5 mb-5"><h2 class="font-extrabold text-slate-800 mb-4 text-center">Nos acompañan</h2>
         <div class="flex flex-wrap items-center justify-center gap-8">${ausp.map(a => { const u = safeUrl(a.sitio_url), logo = safeUrl(a.logo_url);
