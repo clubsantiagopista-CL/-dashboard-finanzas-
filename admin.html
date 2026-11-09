@@ -1561,7 +1561,7 @@ function mensajeCobranza(s) {
 }
 // Link personal del socio (estado.html#token). El token va después del "#": no viaja al servidor.
 const URL_ESTADO = new URL('estado.html', location.href).href.split('#')[0].split('?')[0];
-const linkEstado = s => s?.token_estado ? `${URL_ESTADO}#${s.token_estado}` : '';
+const linkEstado = s => s?.token_estado ? `${URL_ESTADO}?k=${s.token_estado}` : '';
 async function copiarLink(id) {
     const s = state.socios.find(x => x.id === id);
     try { await navigator.clipboard.writeText(linkEstado(s)); toast('Link personal copiado'); }
