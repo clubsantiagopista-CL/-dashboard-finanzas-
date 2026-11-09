@@ -1556,7 +1556,24 @@ function mensajeCobranza(s) {
         .replaceAll('{nombre}', primerNombre).replaceAll('{nombre_completo}', s.nombre)
         .replaceAll('{meses}', String(s.impagos)).replaceAll('{detalle}', detalleDeuda(s))
         .replaceAll('{deuda}', fmt(s.deuda)).replaceAll('{cuota}', fmt(s.cuota_mensual ?? CUOTA_BASE))
-        .replaceAll('{datos_transferencia}', datosTransferencia(c)).replaceAll('{email}', c.email_comprobante || '');
+        .replaceAll('{datos_transferencia}', datosTransferencia(c)).replaceAll('{email}', c.email_comprobante || '')
+        .replaceAll('{link_estado}', linkEstado(s));
+}
+// Link personal del socio (estado.html#token). El token va después del "#": no viaja al servidor.
+const URL_ESTADO = new URL('estado.html', location.href).href.split('#')[0].split('?')[0];
+const linkEstado = s => s?.token_estado ? `${URL_ESTADO}#${s.token_estado}` : '';
+async function copiarLink(id) {
+    const s = state.socios.find(x => x.id === id);
+    try { await navigator.clipboard.writeText(linkEstado(s)); toast('Link personal copiado'); }
+    catch (e) { toast('No se pudo copiar: selecciónalo y cópialo a mano', 'err'); }
+}
+async function regenerarLink(id) {
+    const s = state.socios.find(x => x.id === id);
+    if (!confirm(`¿Generar un link nuevo para ${s.nombre}? El link anterior dejará de funcionar.`)) return;
+    const token = crypto.randomUUID();
+    const { error } = await sb.from('socios').update({ token_estado: token }).eq('id', id);
+    if (error) return toast('No se pudo regenerar: ' + error.message, 'err');
+    s.token_estado = token; toast('Link nuevo generado. Envíaselo al socio.'); render();
 }
 const ultimoRecordatorio = id => (state.recordatorios || []).filter(r => r.socio_id === id).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
 const fechaCorta = iso => new Date(iso).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' });
@@ -1585,6 +1602,11 @@ function modalRecordar(md, campo) {
         <p class="text-[11px] text-slate-500">${s.impagos} cuota(s) · <b class="text-rose-600">${fmt(s.deuda)}</b> · ${esc(detalleDeuda(s))}</p></div>
         <div class="text-[10px] text-slate-500 text-right">📱 ${s.telefono ? '+' + esc(s.telefono) : '<span class="text-rose-500">sin teléfono</span>'}<br>✉️ ${esc(s.email || 'sin email')}</div></div>
       ${ult ? `<p class="text-[10px] bg-amber-50 text-amber-800 rounded px-2 py-1 mb-2">Último recordatorio: ${fechaCorta(ult.created_at)} por ${ult.canal.toLowerCase()} (deuda ${fmt(ult.deuda)})</p>` : ''}
+      <div class="flex flex-wrap items-center gap-2 mb-2 text-[11px]"><span class="font-bold text-slate-500">Link personal:</span>
+        <input readonly class="inp flex-1 min-w-[160px] !text-[10px] mono" value="${esc(linkEstado(s))}" onclick="this.select()">
+        <button type="button" class="btn btn-g !py-1" onclick="copiarLink(${s.id})">Copiar</button>
+        <a class="btn btn-g !py-1" href="${esc(linkEstado(s))}" target="_blank" rel="noopener">Ver ↗</a>
+        <button type="button" class="text-[10px] font-bold text-rose-600 hover:underline" onclick="regenerarLink(${s.id})">Regenerar</button></div>
       ${campo('Mensaje (puedes editarlo antes de enviar)', `<textarea id="msgCobranza" rows="13" class="inp w-full mt-1 !text-[12px] leading-snug">${esc(mensajeCobranza(s))}</textarea>`)}
       <div class="grid grid-cols-3 gap-2 mt-3">
         <button type="button" class="btn text-white" style="background:#22c55e" ${s.telefono ? '' : 'disabled'} onclick="enviarRecordatorio('WHATSAPP')">WhatsApp</button>
@@ -1598,7 +1620,7 @@ function modalConfigCobranza(campo) {
     return { titulo: 'Datos de transferencia y mensaje', cuerpo: `<div class="grid grid-cols-2 gap-3">
         ${f('banco', 'Banco')}${f('tipo_cuenta', 'Tipo de cuenta')}${f('numero_cuenta', 'N° de cuenta')}${f('titular', 'Titular')}${f('rut_titular', 'RUT titular')}${f('email_comprobante', 'Email para comprobantes')}
         <div class="col-span-2">${campo('Plantilla del mensaje', `<textarea name="plantilla_mensaje" rows="12" class="inp w-full mt-1 !text-[12px] leading-snug">${esc(c.plantilla_mensaje || '')}</textarea>`)}
-        <p class="text-[10px] text-slate-500 mt-1">Variables: {nombre} {nombre_completo} {meses} {detalle} {deuda} {cuota} {datos_transferencia} {email}</p></div></div>` };
+        <p class="text-[10px] text-slate-500 mt-1">Variables: {nombre} {nombre_completo} {meses} {detalle} {deuda} {cuota} {datos_transferencia} {email} {link_estado}</p></div></div>` };
 }
 
 function render() {
@@ -1647,7 +1669,7 @@ function render() {
 // MODO CONSULTA (rol directiva). La protección real es RLS (v5);
 // esto solo oculta los controles que escribirían.
 // ============================================================
-const ACCIONES_ESCRITURA = /abrirModal|enviarRecordatorio|import\w+Sheet|importSheetTxs|delRow|rematchSinAsignar|recalcularAperturas|eliminarModal|guardarModal|confirmarTx|commitPreview|aprobarAperturas|editSocio|saveSocio|addNovedad|addAlias|setSocio|setSubcat|setAuspiciador|setSaldoApertura|onFileSelected/;
+const ACCIONES_ESCRITURA = /abrirModal|enviarRecordatorio|import\w+Sheet|importSheetTxs|delRow|rematchSinAsignar|recalcularAperturas|eliminarModal|guardarModal|confirmarTx|commitPreview|aprobarAperturas|editSocio|saveSocio|addNovedad|addAlias|setSocio|setSubcat|setAuspiciador|setSaldoApertura|onFileSelected|regenerarLink/;
 function soloLectura() { return state.me?.rol !== 'admin'; }
 function aplicarSoloLectura(root) {
     root.querySelectorAll('[onclick],[onchange],[onsubmit]').forEach(el => {
@@ -1660,7 +1682,7 @@ function aplicarSoloLectura(root) {
 // Bloqueo adicional en JS: si alguien llama una acción desde la consola
 ['enviarRecordatorio','importSheetTxs','importSociosSheet','importNovedadesSheet','delRow','rematchSinAsignar','recalcularAperturas',
  'eliminarModal','guardarModal','confirmarTx','commitPreview','aprobarAperturas','saveSocio','addNovedad','addAlias',
- 'setSocio','setSubcat','setAuspiciador','setSaldoApertura'].forEach(n => {
+ 'setSocio','setSubcat','setAuspiciador','setSaldoApertura','regenerarLink'].forEach(n => {
     const f = window[n]; if (typeof f !== 'function') return;
     window[n] = function (...a) { if (soloLectura()) { toast('Modo consulta: solo tesorería puede modificar datos.', 'warn'); a[0]?.preventDefault?.(); return; } return f.apply(this, a); };
 });
