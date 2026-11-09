@@ -142,7 +142,7 @@ function render() {
     root.innerHTML = header + `<main class="max-w-6xl mx-auto px-3 md:px-4 py-5">
       <p class="text-sm text-slate-600 mb-4">Así se financia el club en ${d.anio}: cuánto aportamos entre todos, en qué se usa y cuánto falta para cumplir las metas. Cifras totales del club, sin datos individuales.</p>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        ${kpi('Recaudado ' + d.anio, fmt(recaudado), `Cuotas ${fmt(ing.cuotas)} · auspicios ${fmt(ing.auspicios)}`, '#1e293b')}
+        ${kpi('Recaudado ' + d.anio, fmt(recaudado), Number(ing.auspicios) ? `Cuotas ${fmt(ing.cuotas)} · auspicios ${fmt(ing.auspicios)}` : 'Cuotas de los socios', '#1e293b')}
         ${kpi('Saldo disponible', d.saldo_banco ? fmt(d.saldo_banco.monto) : '—', d.saldo_banco ? 'Cuenta del club al ' + d.saldo_banco.fecha.split('-').reverse().join('/') : '', '#22c55e')}
         ${kpi('Falta por recaudar', objetivo ? fmt(falta) : '—', objetivo ? `para las metas ${d.anio}` : 'Metas por definir', '#ef4444')}
         ${kpi('Socios al día', `${soc.al_dia ?? 0} de ${soc.activos ?? 0}`, `Cuotas pendientes en total: ${fmt(porCobrar)}`, '#E8572A')}
@@ -171,7 +171,7 @@ function render() {
       <div class="grid lg:grid-cols-2 gap-5 mb-5">
         <section class="card p-5"><h2 class="font-extrabold text-slate-800 mb-3">¿De dónde vienen los ingresos?</h2>
           <div class="flex flex-wrap items-center gap-6">${donut([{ l:'Cuotas', v:Number(ing.cuotas), c:'#1e293b' }, { l:'Auspicios', v:Number(ing.auspicios), c:'#3b82f6' }, { l:'Ventas y aportes', v:Number(ing.otros), c:'#22c55e' }])}
-            <div class="text-xs space-y-2 flex-1">${[['Cuotas de socios', ing.cuotas, '#1e293b'], ['Auspicios', ing.auspicios, '#3b82f6'], ['Ventas y aportes (tricotas, eventos…)', ing.otros, '#22c55e']].map(([l, v, c]) => {
+            <div class="text-xs space-y-2 flex-1">${[['Cuotas de socios', ing.cuotas, '#1e293b'], ['Auspicios', ing.auspicios, '#3b82f6'], ['Ventas y aportes (tricotas, eventos…)', ing.otros, '#22c55e']].filter(([l, v]) => l !== 'Auspicios' || Number(v) > 0).map(([l, v, c]) => {
               const tt = Number(ing.cuotas) + Number(ing.auspicios) + Number(ing.otros);
               return `<div class="flex items-center gap-2"><span class="w-3 h-3 rounded-sm" style="background:${c}"></span><span class="text-slate-600">${l}</span><b class="mono ml-auto">${fmt(v)}</b><span class="text-slate-400 w-9 text-right">${tt ? Math.round(v / tt * 100) : 0}%</span></div>`; }).join('')}</div></div></section>
         <section class="card p-5"><h2 class="font-extrabold text-slate-800 mb-3">¿En qué se usa? <span class="text-slate-400 font-normal text-sm">${fmt(egrTot)}</span></h2>
