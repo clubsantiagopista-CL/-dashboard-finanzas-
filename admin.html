@@ -1116,7 +1116,7 @@ function viewCaja(data) {
           <div>${fila('Saldo inicial cuenta', sInicial, '')}
             ${fila('+ Ingresos', ingTot, '100%', 'text-slate-900')}
             ${fila('&nbsp;&nbsp;Cuotas', ingCuota, pct(ingCuota, ingTot), 'text-slate-600')}
-            ${fila('&nbsp;&nbsp;Auspicios', ingAusp, pct(ingAusp, ingTot), 'text-slate-600')}
+            ${ingAusp ? fila('&nbsp;&nbsp;Auspicios', ingAusp, pct(ingAusp, ingTot), 'text-slate-600') : ''}
             ${fila('&nbsp;&nbsp;Ventas y aportes', ingOtros, pct(ingOtros, ingTot), 'text-slate-600')}</div>
           <div>${fila('− Egresos', egTot, pct(egTot, ingTot) + ' ing.', 'text-orange-600')}
             ${fila('= Saldo calculado', sCalc, '', 'text-slate-900')}
@@ -1351,20 +1351,20 @@ function viewDashboard() {
         <select class="inp" onchange="setState({dm:this.value})">${monthOpts}</select>
         <span class="text-[11px] text-slate-500">Excluye movimientos marcados NO_EN_BANCO.</span>
       </div>
-      <div class="grid grid-cols-2 lg:grid-cols-5 gap-2 md:gap-3 mb-4">
-        ${kpi('Ingresos totales', fmt(recaudado), `Cuotas ${fmt(cuotas)} + auspicios ${fmt(ausp)}<br>Aparte: ventas y aportes ${fmt(otros)}`, '#1e293b')}
+      <div class="grid grid-cols-2 ${ausp ? 'lg:grid-cols-5' : 'lg:grid-cols-4'} gap-2 md:gap-3 mb-4">
+        ${kpi('Ingresos totales', fmt(recaudado), `Cuotas ${fmt(cuotas)}${ausp ? ` + auspicios ${fmt(ausp)}` : ''}<br>Aparte: ventas y aportes ${fmt(otros)}`, '#1e293b')}
         ${kpi('Egresos comprometidos', metas.length ? fmt(objetivoTot) : '—', `${metas.length ? 'Suma de metas del periodo' : 'Sin metas definidas'}<br>Ejecutados: ${fmt(egrTot)}`, '#E8572A')}
         ${kpi('Saldo actual disponible', banco ? fmt(banco.saldo) : '—', banco ? `Cuenta banco al ${banco.fecha.split('-').reverse().join('/')}` : 'Sube una cartola', '#22c55e')}
         ${kpi('Monto crítico por cobrar', fmt(porCobrar), `${conDeuda} socios activos con deuda (hoy)`, '#ef4444')}
-        ${kpi('Aportes por auspicios', fmt(ausp), `${(state.auspiciadores || []).filter(auspVigente).length} auspiciadores activos`, '#3b82f6')}
+        ${ausp ? kpi('Aportes por auspicios', fmt(ausp), `${(state.auspiciadores || []).filter(auspVigente).length} auspiciadores activos`, '#3b82f6') : ''}
       </div>
       <div class="card p-4 mb-4"><div class="flex flex-wrap justify-between items-center gap-2 mb-3">
-        <div><h2 class="font-bold text-slate-800 text-sm">Transparencia y metas · ${per}</h2><p class="text-[11px] text-slate-500">Lo recaudado (cuotas + auspicios) cubre las metas en orden de prioridad.</p></div>
+        <div><h2 class="font-bold text-slate-800 text-sm">Transparencia y metas · ${per}</h2><p class="text-[11px] text-slate-500">Lo recaudado (${ausp ? 'cuotas + auspicios' : 'cuotas'}) cubre las metas en orden de prioridad.</p></div>
         <button class="btn btn-g" onclick="setState({tab:'metas'})">Editar metas</button></div>${tracker}</div>
       <div class="grid lg:grid-cols-2 gap-4">
         <div class="card p-4"><h2 class="font-bold text-slate-800 text-sm mb-3">¿De dónde vienen los ingresos? · ${per}</h2>
           <div class="flex flex-wrap items-center gap-6">${svgDonut([{ l: 'Cuotas', v: cuotas, c: '#1e293b' }, { l: 'Auspicios', v: ausp, c: '#3b82f6' }, { l: 'Ventas y aportes', v: otros, c: '#22c55e' }])}
-          <div class="text-xs space-y-2">${[['Cuotas socios', cuotas, '#1e293b'], ['Auspicios', ausp, '#3b82f6'], ['Ventas y aportes (tricotas, eventos…)', otros, '#22c55e']].map(([l, v, c]) => {
+          <div class="text-xs space-y-2">${[['Cuotas socios', cuotas, '#1e293b'], ['Auspicios', ausp, '#3b82f6'], ['Ventas y aportes (tricotas, eventos…)', otros, '#22c55e']].filter(([l, v]) => l !== 'Auspicios' || v > 0).map(([l, v, c]) => {
               const tt = cuotas + ausp + otros; return `<div class="flex items-center gap-2"><span class="w-3 h-3 rounded-sm" style="background:${c}"></span><span class="text-slate-600">${l}</span><b class="mono ml-auto pl-3">${fmt(v)}</b><span class="text-slate-400 w-10 text-right">${tt ? Math.round(v / tt * 100) : 0}%</span></div>`; }).join('')}</div></div></div>
         <div class="card p-4"><h2 class="font-bold text-slate-800 text-sm mb-3">¿En qué se gasta? · ${per} · ${fmt(egrTot)}</h2>
           ${egrList.length ? egrList.map(([k, v], i) => `<div class="mb-2"><div class="flex justify-between text-[11px] mb-0.5"><span class="text-slate-600 truncate">${esc(k)}</span><span class="mono font-bold">${fmt(v)} <span class="text-slate-400 font-normal">${Math.round(v / egrTot * 100)}%</span></span></div>
