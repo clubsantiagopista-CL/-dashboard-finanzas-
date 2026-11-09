@@ -39,6 +39,99 @@ const fecha = iso => iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(
 const state = { data: null, error: '', club: null };
 const PALETA = ['#1e293b', '#22c55e', '#E8572A', '#3b82f6', '#a855f7', '#f59e0b', '#14b8a6', '#94a3b8'];
 
+const pctTxt = v => Math.round(v * 100) + '%';
+const decimal = v => v.toLocaleString('es-CL', { maximumFractionDigits: 1 });
+
+// PROPUESTA 2 · El bidón del club: cuánto entró de lo que debía entrar
+function viewBidon(c) {
+    const q = c?.cuotas; if (!q || !Number(q.deberia)) return '';
+    const deberia = Number(q.deberia), entro = Number(q.entro), falta = Number(q.falta);
+    const p = Math.max(0, Math.min(1, entro / deberia));
+    const H = 200, nivel = Math.round(H * p);
+    const sueldo = Number(q.sueldo_ref || 0), meses = sueldo ? falta / sueldo : 0;
+    const cajas = Math.min(12, Math.ceil(meses));
+    const caja = i => { const lleno = Math.min(1, meses - i); return `<div class="relative w-14 h-10 rounded-md border-2 border-slate-800 overflow-hidden bg-white">
+        <div class="absolute inset-y-0 left-0" style="width:${(lleno * 100).toFixed(0)}%;background:#E8572A"></div>
+        <span class="relative z-10 flex h-full items-center justify-center text-[10px] font-extrabold text-slate-900">mes ${i + 1}</span></div>`; };
+    return `<section class="card p-4">
+      <p class="text-[10px] font-bold uppercase tracking-widest" style="color:var(--orange)">Entre todos</p>
+      <h2 class="font-extrabold text-slate-800 mb-3">El bidón del club</h2>
+      <div class="grid sm:grid-cols-[170px_1fr] gap-4 items-center">
+        <svg viewBox="0 0 160 260" class="w-36 mx-auto" role="img" aria-label="Bidón ${pctTxt(p)} lleno">
+          <rect x="55" y="4" width="50" height="26" rx="6" fill="#1e293b"/><rect x="45" y="24" width="70" height="14" rx="4" fill="#1e293b"/>
+          <clipPath id="bid"><rect x="18" y="40" width="124" height="${H + 16}" rx="26"/></clipPath>
+          <rect x="18" y="40" width="124" height="${H + 16}" rx="26" fill="#ffe4e6"/>
+          <rect clip-path="url(#bid)" x="18" y="${40 + H + 16 - nivel}" width="124" height="${nivel}" fill="#16a34a"/>
+          <rect x="18" y="40" width="124" height="${H + 16}" rx="26" fill="none" stroke="#1e293b" stroke-width="5"/>
+          ${p < 0.92 ? `<text x="80" y="${40 + Math.max(16, (H + 16 - nivel) / 2 + 6)}" text-anchor="middle" font-size="12" font-weight="800" fill="#be123c">falta llenar</text>` : ''}
+          <text x="80" y="${Math.min(232, 40 + H + 16 - nivel / 2)}" text-anchor="middle" font-size="34" font-weight="800" fill="#fff">${pctTxt(p)}</text>
+          <text x="80" y="${Math.min(250, 40 + H + 16 - nivel / 2 + 18)}" text-anchor="middle" font-size="12" fill="#fff">lleno</text>
+        </svg>
+        <div class="space-y-2">
+          <div class="rounded-xl border border-slate-200 p-3"><p class="text-[11px] text-slate-500">Debería haber entrado</p><p class="text-xl font-extrabold text-slate-800 mono">${fmt(deberia)}</p></div>
+          <div class="rounded-xl border border-slate-200 p-3"><p class="text-[11px] text-slate-500">Entró</p><p class="text-xl font-extrabold text-emerald-600 mono">${fmt(entro)}</p></div>
+          <div class="rounded-xl border border-rose-200 bg-rose-50 p-3"><p class="text-[11px] text-rose-700">Falta</p><p class="text-xl font-extrabold text-rose-600 mono">${fmt(falta)}</p></div>
+          ${meses >= 0.1 ? `<p class="text-xs font-bold text-slate-700 pt-1">¿Qué es esa plata que falta?</p>
+          <div class="flex flex-wrap items-center gap-2">${Array.from({ length: cajas }, (_, i) => caja(i)).join('')}
+            <div class="pl-1"><p class="text-xl font-extrabold" style="color:var(--orange)">≈ ${decimal(meses)}</p><p class="text-[10px] text-slate-500 leading-tight">meses de sueldo<br>del entrenador</p></div></div>` : ''}
+        </div>
+      </div>
+      <div class="rounded-xl p-3 mt-4 text-sm text-white" style="background:var(--navy)">“El bidón está <b class="text-amber-300">${pctTxt(p)} lleno</b>.${meses >= 0.1 ? ` Lo que falta, ${fmt(falta)}, equivale a <b class="text-amber-300">${meses >= 1.9 ? 'casi ' + Math.round(meses) : decimal(meses)} ${Math.round(meses) === 1 ? 'mes' : 'meses'} de sueldo del entrenador</b>.` : ''}”</div>
+      <p class="text-[10px] text-slate-400 mt-2">Cuotas vencidas de los socios activos en ${c.anio} más lo que se arrastraba de 2025.${sueldo ? ` Sueldo de referencia: remuneraciones de ${MESES_L[parseInt(q.sueldo_mes.slice(5, 7)) - 1]} (${fmt(sueldo)}).` : ''}</p>
+    </section>`;
+}
+
+// PROPUESTA 1 · El pelotón: cada bicicleta es un socio activo (sin nombres)
+function bici(x, y, color, k) {
+    return `<g transform="translate(${x},${y}) scale(${k})" stroke="${color}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="5" cy="14" r="4.5"/><circle cx="21" cy="14" r="4.5"/>
+      <path d="M5 14 L11 5 L18 5 L21 14 M11 5 L14 14 L5 14 M18 5 L14 14"/><path d="M10 3 L13 3"/>
+      <circle cx="16" cy="-3" r="2.2" fill="${color}" stroke="none"/><path d="M16 -1 L13 5 M15 1 L19 4"/></g>`;
+}
+function zonaBicis(n, x0, x1, color) {
+    // Reparte n bicis en una grilla que cabe entre y=72 y y=146 (sobre la calle)
+    if (!n) return '';
+    const W = x1 - x0, TOP = 72, H = 74;
+    const cols = Math.max(1, Math.min(n, Math.ceil(Math.sqrt(n * W / H * 0.9))));
+    const filas = Math.ceil(n / cols), cw = W / cols, ch = H / filas;
+    const k = Math.min(1.1, cw / 27, ch / 25);
+    let out = '';
+    for (let i = 0; i < n; i++) {
+        const c = i % cols, f = Math.floor(i / cols);
+        const jx = (((i * 37) % 5) - 2) * k, desf = f % 2 ? cw / 3 : 0;
+        out += bici(x0 + c * cw + desf + jx, TOP + f * ch + 6 * k, color, k);
+    }
+    return out;
+}
+function viewPeloton(c, miImpagas, esActivo) {
+    const q = c?.cuotas; if (!q) return '';
+    const al = Number(q.al_dia), de = Number(q.descolgados), es = Number(q.escoba), tot = al + de + es; if (!tot) return '';
+    const yo = !esActivo ? null : miImpagas === 0 ? 'al' : miImpagas <= 2 ? 'de' : 'es';
+    const marca = (z, x) => yo === z ? `<g><rect x="${x - 38}" y="-2" width="76" height="18" rx="9" fill="#1e293b"/><text x="${x}" y="11" text-anchor="middle" font-size="10" font-weight="800" fill="#fff">TÚ VAS AQUÍ</text></g>` : '';
+    const cab = (x, n, color, t1, t2) => `<text x="${x}" y="34" text-anchor="middle" font-size="18" font-weight="800" fill="${color}">${n} socio${n === 1 ? '' : 's'}</text>
+        <text x="${x}" y="48" text-anchor="middle" font-size="10" fill="#475569">${t1}</text><text x="${x}" y="60" text-anchor="middle" font-size="10" font-weight="700" fill="#334155">${t2}</text>`;
+    const frase = yo === 'al' ? '¡Vas en el pelotón! Gracias por mantener tus cuotas al día. 💪'
+        : yo === 'de' ? `Te descolgaste un poco: debes ${miImpagas} cuota${miImpagas === 1 ? '' : 's'}. Con un pago vuelves al pelotón.`
+        : yo === 'es' ? `Vas con el auto escoba: debes ${miImpagas} cuotas. Escríbenos y vemos cómo te ponemos al día.` : '';
+    return `<section class="card p-4">
+      <p class="text-[10px] font-bold uppercase tracking-widest" style="color:var(--orange)">Dónde va el club</p>
+      <h2 class="font-extrabold text-slate-800 mb-1">El pelotón</h2>
+      <p class="text-[11px] text-slate-500 mb-2">Cada bicicleta es un socio activo. Los que están al día van en el pelotón; los atrasados se descolgaron y los más atrasados van con el auto escoba. Sin nombres.</p>
+      <div class="overflow-x-auto"><svg viewBox="0 0 640 205" class="w-full min-w-[520px]" role="img" aria-label="Pelotón: ${al} al día, ${de} deben 1 o 2 cuotas, ${es} deben 3 o más">
+        ${marca('es', 120)}${marca('de', 300)}${marca('al', 500)}
+        ${cab(120, es, '#dc2626', 'con el auto escoba', 'deben 3 o más')}${cab(300, de, '#d97706', 'se descolgaron', 'deben 1 o 2 cuotas')}${cab(500, al, '#16a34a', 'van en el pelotón', 'al día')}
+        <rect x="0" y="158" width="640" height="26" rx="4" fill="#e2e8f0"/><path d="M10 171 H630" stroke="#fff" stroke-width="2" stroke-dasharray="14 10"/>
+        ${[0, 1, 2, 3].map(r => [0, 1].map(cc => `<rect x="${612 + cc * 8}" y="${148 + r * 9}" width="8" height="9" fill="${(r + cc) % 2 ? '#fff' : '#1e293b'}"/>`).join('')).join('')}
+        <text x="620" y="143" text-anchor="middle" font-size="10" font-weight="800" fill="#1e293b">META</text>
+        <g transform="translate(8,157)"><rect x="0" y="0" width="44" height="16" rx="5" fill="#94a3b8"/><rect x="8" y="-8" width="24" height="10" rx="3" fill="#94a3b8"/><rect x="11" y="-6" width="8" height="6" fill="#e2e8f0"/><rect x="21" y="-6" width="8" height="6" fill="#e2e8f0"/><circle cx="10" cy="17" r="4.5" fill="#334155"/><circle cx="34" cy="17" r="4.5" fill="#334155"/></g>
+        ${zonaBicis(es, 40, 200, '#dc2626')}${zonaBicis(de, 222, 382, '#f59e0b')}${zonaBicis(al, 404, 600, '#16a34a')}
+        <text x="60" y="200" font-size="9" fill="#64748b">auto escoba = hay que ir a buscarlos</text>
+      </svg></div>
+      ${frase ? `<p class="text-sm font-bold mt-2 ${yo === 'al' ? 'text-emerald-700' : yo === 'de' ? 'text-amber-700' : 'text-rose-700'}">${frase}</p>` : ''}
+      <div class="rounded-xl p-3 mt-3 text-sm text-white" style="background:var(--navy)">“El <b class="text-amber-300">${pctTxt(al / tot)} del club va en el pelotón</b>.${de ? ` Hay ${de} que se descolgaron un poco` : ''}${de && es ? ' y ' : es ? ' Hay ' : ''}${es ? `<b class="text-amber-300">${es} que necesitan que los vayamos a buscar</b>` : ''}.”</div>
+    </section>`;
+}
+
 // Resumen de egresos del club: año completo + mes en curso (solo categorías, sin glosas)
 function viewGastos(c) {
     if (!c) return '';
@@ -74,8 +167,11 @@ const ESTILO = {
 };
 
 async function cargar() {
-    const token = decodeURIComponent(location.hash.slice(1)).trim();
-    if (!/^[0-9a-f-]{36}$/i.test(token)) { state.error = 'link'; return render(); }
+    // Acepta estado.html?k=<token>, #k=<token> o #<token>: busca el uuid en toda la URL
+    // (algunas apps de mensajería recortan o reescriben el "#")
+    const m = decodeURIComponent(location.href).match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    const token = m ? m[0].toLowerCase() : '';
+    if (!token) { state.error = 'link'; return render(); }
     render();
     // En paralelo: su estado individual + el resumen público del club (en qué se usa la plata)
     const [r1, r2] = await Promise.all([
@@ -165,6 +261,8 @@ function render() {
           : '<p class="text-sm text-slate-400">Aún no registramos pagos tuyos este año.</p>'}
       </section>
 
+      ${viewBidon(state.club)}
+      ${viewPeloton(state.club, Number(d.meses_impagos), activo)}
       ${viewGastos(state.club)}
 
       ${deuda > 0 ? `<section class="card p-4">
