@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>Mi estado de cuotas · Club Ciclista Santiago Pista</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700;9..40,800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root { --navy:#1e293b; --orange:#E8572A; }
+  body { background:#F1F5F9; font-family:'DM Sans',system-ui,sans-serif; margin:0; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .card { background:#fff; border:1px solid #e2e8f0; border-radius:.9rem; box-shadow:0 1px 2px rgba(0,0,0,.04); }
+  @keyframes spin { to { transform:rotate(360deg) } } .sp { animation:spin .8s linear infinite; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+// ============================================================
+// Estado de cuotas individual (sin login).
+// El link es estado.html#<token>: el token va en el "#" para que no
+// viaje al servidor ni quede en registros. La función estado_socio()
+// devuelve solo los datos del socio dueño de ese token.
+// ============================================================
+const CONFIG = {
+    SUPABASE_URL: 'https://xnbrkusnmascgkhumyab.supabase.co',
+    SUPABASE_ANON_KEY: 'sb_publishable_Z--e4miwXSirAa7cj87I3A_ZDOwOOgn',
+};
+const sb = supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY, { auth: { persistSession: false } });
+const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+const MESES_L = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+const fmt = v => new Intl.NumberFormat('es-CL', { style:'currency', currency:'CLP', maximumFractionDigits:0 }).format(v || 0);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+const fecha = iso => iso.slice(8, 10) + '/' + iso.slice(5, 7) + '/' + iso.slice(0, 4);
+const state = { data: null, error: '', club: null };
+const PALETA = ['#1e293b', '#22c55e', '#E8572A', '#3b82f6', '#a855f7', '#f59e0b', '#14b8a6', '#94a3b8'];
+
+// Resumen de egresos del club: año completo + mes en curso (solo categorías, sin glosas)
+function viewGastos(c) {
+    if (!c) return '';
+    let cats = (c.egresos_por_categoria || []).map(x => [x.categoria, Number(x.monto)]);
+    const total = Number(c.egresos_total || 0); if (!total) return '';
+    if (cats.length > 6) cats = [...cats.slice(0, 5), ['Otras categorías', cats.slice(5).reduce((a, x) => a + x[1], 0)]];
+    const max = Math.max(1, ...cats.map(x => x[1]));
+    const hoy = new Date(), mes = hoy.getMonth() + 1;
+    const det = (c.egresos_detalle || []).filter(x => x.mes === mes);
+    const porCat = {}; det.forEach(x => porCat[x.categoria] = (porCat[x.categoria] || 0) + Number(x.monto));
+    const mesCats = Object.entries(porCat).sort((a, b) => b[1] - a[1]);
+    const salioMes = mesCats.reduce((a, x) => a + x[1], 0);
+    const ing = c.ingresos || {}, ingTot = Number(ing.cuotas) + Number(ing.auspicios) + Number(ing.otros);
+    return `<section class="card p-4">
+        <h2 class="font-extrabold text-slate-800">¿En qué usamos la plata del club?</h2>
+        <p class="text-[11px] text-slate-500 mb-3">Gastos del club en ${c.anio}: <b class="mono text-slate-700">${fmt(total)}</b>${ingTot ? `, financiados en un ${Math.round(Number(ing.cuotas) / ingTot * 100)}% con las cuotas de los socios` : ''}.</p>
+        ${cats.map(([k, v], i) => `<div class="mb-2"><div class="flex justify-between text-xs mb-0.5"><span class="text-slate-600 truncate">${esc(k)}</span><span class="mono font-bold">${fmt(v)} <span class="text-slate-400 font-normal">${Math.round(v / total * 100)}%</span></span></div>
+          <div class="h-2.5 bg-slate-100 rounded-full"><div class="h-full rounded-full" style="width:${(v / max * 100).toFixed(1)}%;background:${PALETA[i % PALETA.length]}"></div></div></div>`).join('')}
+        ${mesCats.length ? `<div class="rounded-xl bg-slate-50 p-3 mt-3">
+          <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">Este mes (${MESES_L[mes - 1]}) salieron ${fmt(salioMes)}</p>
+          ${mesCats.map(([k, v]) => `<div class="flex justify-between text-xs py-0.5"><span class="text-slate-600">${esc(k)}</span><span class="mono font-bold">${fmt(v)}</span></div>`).join('')}</div>` : ''}
+        ${c.saldo_banco ? `<p class="text-[11px] text-slate-500 mt-3">Saldo de la cuenta del club al ${c.saldo_banco.fecha.split('-').reverse().join('/')}: <b class="mono text-emerald-700">${fmt(c.saldo_banco.monto)}</b></p>` : ''}
+        <a href="publico.html" class="block text-center mt-3 text-xs font-bold text-sky-700 hover:underline">Ver la transparencia completa del club →</a>
+      </section>`;
+}
+
+// Mismos colores y símbolos que el mapa de calor del panel de tesorería
+const ESTILO = {
+    PAGADO:    { bg:'bg-emerald-100', tx:'text-emerald-700', ic:'✓', l:'Pagada' },
+    IMPAGO:    { bg:'bg-rose-100',    tx:'text-rose-600',    ic:'✗', l:'Por pagar' },
+    PENDIENTE: { bg:'bg-slate-50',    tx:'text-slate-300',   ic:'·', l:'Aún no vence' },
+    EXENTO:    { bg:'bg-sky-50',      tx:'text-sky-400',     ic:'—', l:'No corresponde (antes de ingresar, beca o congelado)' },
+};
+
+async function cargar() {
+    const token = decodeURIComponent(location.hash.slice(1)).trim();
+    if (!/^[0-9a-f-]{36}$/i.test(token)) { state.error = 'link'; return render(); }
+    render();
+    // En paralelo: su estado individual + el resumen público del club (en qué se usa la plata)
+    const [r1, r2] = await Promise.all([
+        sb.rpc('estado_socio', { p_token: token }),
+        sb.rpc('resumen_publico', { p_anio: new Date().getFullYear() }),
+    ]);
+    if (r1.error) state.error = r1.error.message; else if (!r1.data) state.error = 'link'; else state.data = r1.data;
+    if (!r2.error) state.club = r2.data;
+    render();
+}
+
+async function copiarDatos() {
+    const t = state.data.transferencia || {};
+    const txt = [`Banco: ${t.banco}`, `Tipo de cuenta: ${t.tipo_cuenta}`, `N° de cuenta: ${t.numero_cuenta}`, `Titular: ${t.titular}`, `RUT: ${t.rut_titular}`, `Email: ${t.email}`].join('\n');
+    try { await navigator.clipboard.writeText(txt); document.getElementById('btnCopiar').textContent = '✓ Datos copiados'; }
+    catch (e) { alert(txt); }
+}
+
+function render() {
+    const root = document.getElementById('root');
+    const header = `<header style="background:var(--navy)"><div class="max-w-3xl mx-auto px-4 py-4 flex items-center gap-3">
+        <div class="w-10 h-10 rounded-lg flex items-center justify-center font-black text-white" style="background:var(--orange)">SP</div>
+        <div><h1 class="text-white font-extrabold leading-tight">Mi estado de cuotas</h1><p class="text-slate-400 text-[10px] uppercase tracking-wider">Club Ciclista Santiago Pista</p></div></div></header>`;
+    if (state.error) {
+        const msg = state.error === 'link'
+            ? 'Este link no es válido o fue reemplazado por uno nuevo. Pide tu link actualizado a la tesorería del club.'
+            : `No se pudo cargar tu información (${esc(state.error)}). Intenta de nuevo en unos minutos.`;
+        root.innerHTML = header + `<main class="max-w-xl mx-auto p-4"><div class="card p-6 text-sm text-slate-600">${msg}</div></main>`; return;
+    }
+    if (!state.data) { root.innerHTML = header + `<div class="flex justify-center p-16"><div class="w-10 h-10 border-4 border-slate-200 rounded-full sp" style="border-top-color:var(--navy)"></div></div>`; return; }
+
+    const d = state.data, t = d.transferencia || {};
+    const primer = String(d.nombre || '').trim().split(/\s+/)[0];
+    const deuda = Number(d.deuda), favor = Number(d.saldo_a_favor), ap = Number(d.saldo_apertura || 0);
+    const pagadas = Number(d.cuotas_pagadas), impagas = Number(d.cuotas_impagas);
+    const proximas = (d.meses || []).filter(m => m.estado === 'PENDIENTE').length;
+    const totalPagos = (d.pagos || []).reduce((a, p) => a + Number(p.monto), 0);
+    const anio = (d.meses?.[d.meses.length - 1]?.mes || '2026').slice(0, 4);
+    const ue = d.ultimo_exigible ? new Date(d.ultimo_exigible + 'T12:00:00') : null;
+    const corte = ue ? `${MESES_L[ue.getMonth()]} ${ue.getFullYear()}` : '';
+    const activo = /ACTIVO/i.test(d.estado_socio || '');
+
+    const resumen = deuda > 0
+        ? `<div class="card p-5 border-rose-200" style="background:#fff1f2">
+             <p class="text-[10px] font-bold uppercase tracking-widest text-rose-500">Tienes cuotas por pagar</p>
+             <p class="text-3xl font-extrabold text-rose-600 mono mt-1">${fmt(deuda)}</p>
+             <p class="text-sm text-rose-700 mt-1">${d.meses_impagos} cuota${d.meses_impagos == 1 ? '' : 's'} de ${fmt(d.cuota_mensual)} pendiente${d.meses_impagos == 1 ? '' : 's'}${corte ? `, al cierre de ${corte}` : ''}.</p></div>`
+        : `<div class="card p-5 border-emerald-200" style="background:#f0fdf4">
+             <p class="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Estado</p>
+             <p class="text-2xl font-extrabold text-emerald-700 mt-1">¡Estás al día! 🎉</p>
+             <p class="text-sm text-emerald-800 mt-1">${favor > 0 ? `Tienes ${fmt(favor)} a favor, que se usa en tus próximas cuotas.` : 'Gracias por mantener tus cuotas al día.'}</p></div>`;
+
+    // Fila de 12 meses como en el panel: los meses antes de su ingreso salen con "—"
+    const porMes = Object.fromEntries((d.meses || []).map(m => [m.mes, m]));
+    const tiles = MESES.map((ml, mi) => {
+        const m = porMes[`${anio}-${String(mi + 1).padStart(2, '0')}`];
+        const e = m ? (ESTILO[m.estado] || ESTILO.PENDIENTE) : ESTILO.EXENTO;
+        return `<div class="text-center" title="${MESES_L[mi]}: ${e.l}">
+            <p class="mono text-[10px] font-bold uppercase text-slate-400 mb-1">${ml}'${anio.slice(2)}</p>
+            <div class="rounded-lg ${e.bg} ${e.tx} h-9 flex items-center justify-center font-bold text-base">${e.ic === '✗' ? 'X' : e.ic}</div></div>`;
+    }).join('');
+
+    root.innerHTML = header + `<main class="max-w-3xl mx-auto px-3 py-5 space-y-4">
+      <p class="text-slate-700">Hola <b>${esc(primer)}</b> 👋, este es el detalle de tus cuotas ${anio}.</p>
+      ${!activo ? `<div class="card p-3 text-xs text-slate-600">Tu estado en el club figura como <b>${esc(d.estado_socio)}</b>.</div>` : ''}
+      ${resumen}
+
+      <div class="grid grid-cols-3 gap-3">
+        <div class="card p-3 text-center"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400">Pagadas</p><p class="text-2xl font-extrabold text-emerald-600">${pagadas}</p></div>
+        <div class="card p-3 text-center"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400">Por pagar</p><p class="text-2xl font-extrabold ${impagas ? 'text-rose-600' : 'text-slate-300'}">${impagas}</p></div>
+        <div class="card p-3 text-center"><p class="text-[9px] font-bold uppercase tracking-widest text-slate-400">Aún no vencen</p><p class="text-2xl font-extrabold text-slate-400">${proximas}</p></div>
+      </div>
+
+      <section class="card p-4">
+        <h2 class="font-extrabold text-slate-800 mb-3">Mes a mes ${anio}</h2>
+        <div class="grid grid-cols-6 sm:grid-cols-12 gap-1.5">${tiles}</div>
+        <div class="flex flex-wrap gap-x-4 gap-y-1 mt-3 text-[10px] text-slate-500">
+          ${['PAGADO','IMPAGO','PENDIENTE','EXENTO'].map(k => `<span><b class="${ESTILO[k].tx}">${ESTILO[k].ic === '✗' ? 'X' : ESTILO[k].ic}</b> ${ESTILO[k].l}</span>`).join('')}</div>
+        ${ap < 0 ? `<p class="text-[11px] text-amber-800 bg-amber-50 rounded-lg p-2 mt-3">Arrastrabas ${fmt(-ap)} pendientes de 2025. Tus pagos cubren primero ese saldo y después los meses de ${anio}, en orden.</p>` : ''}
+        ${ap > 0 ? `<p class="text-[11px] text-emerald-800 bg-emerald-50 rounded-lg p-2 mt-3">Tenías ${fmt(ap)} a favor de 2025, ya considerados en tus meses pagados.</p>` : ''}
+        <p class="text-[10px] text-slate-400 mt-2">Cada cuota vence el día 24 de su mes. Los pagos se aplican a las cuotas más antiguas primero.</p>
+      </section>
+
+      <section class="card p-4">
+        <div class="flex justify-between items-baseline mb-2"><h2 class="font-extrabold text-slate-800">Pagos recibidos ${anio}</h2><span class="mono text-sm font-bold text-emerald-700">${fmt(totalPagos)}</span></div>
+        ${(d.pagos || []).length ? `<div class="divide-y divide-slate-100">${d.pagos.map(p => `<div class="flex justify-between py-1.5 text-sm"><span class="mono text-slate-500">${fecha(p.fecha)}</span><span class="mono font-bold">${fmt(p.monto)}</span></div>`).join('')}</div>`
+          : '<p class="text-sm text-slate-400">Aún no registramos pagos tuyos este año.</p>'}
+      </section>
+
+      ${viewGastos(state.club)}
+
+      ${deuda > 0 ? `<section class="card p-4">
+        <h2 class="font-extrabold text-slate-800 mb-2">Datos para transferir</h2>
+        <div class="text-sm text-slate-700 space-y-0.5">
+          <p>Banco: <b>${esc(t.banco)}</b></p><p>Tipo de cuenta: <b>${esc(t.tipo_cuenta)}</b></p><p>N° de cuenta: <b class="mono">${esc(t.numero_cuenta)}</b></p>
+          <p>Titular: <b>${esc(t.titular)}</b></p><p>RUT: <b class="mono">${esc(t.rut_titular)}</b></p><p>Email: <b>${esc(t.email)}</b></p></div>
+        <button id="btnCopiar" onclick="copiarDatos()" class="mt-3 w-full rounded-lg py-2.5 text-sm font-bold text-white" style="background:var(--navy)">Copiar datos de transferencia</button>
+        <p class="text-[11px] text-slate-500 mt-2">Indica tu nombre en el comentario de la transferencia.</p>
+      </section>` : ''}
+
+      <p class="text-[11px] text-slate-500 text-center px-4">¿Ves algo que no cuadra? Envía tu comprobante a <b>${esc(t.email)}</b> y lo revisamos.</p>
+      <p class="text-[10px] text-slate-400 text-center">Este link es personal: no lo compartas. Actualizado ${new Date(d.actualizado).toLocaleString('es-CL')}</p>
+    </main>`;
+}
+window.addEventListener('hashchange', () => { state.data = null; state.error = ''; cargar(); });
+cargar();
+</script>
+</body>
+</html>
