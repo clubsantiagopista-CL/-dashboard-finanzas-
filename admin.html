@@ -73,7 +73,13 @@ const STOP_WORDS = ["que","del","los","las","por","con","sin","tef","cta","cct",
 const MULTIPLO_CUOTA = 8750;
 const RE_SALIDA = /(SUSPENDID|DESVINCULAD|RETIRAD|INACTIVO|RENUNCIA)/i;
 const ESTADOS = ['ACTIVO','SUSPENDIDO','RETIRADO','RENUNCIA','DESVINCULADO','BECADO'];
-const SUBCATS = ['CUOTA','AUSPICIO','ARRIENDO','DONACION','OTROS'];
+const SUBCATS = ['CUOTA','COMPRA_CONJUNTA','AUSPICIO','ARRIENDO','DONACION','OTROS'];
+// Compras en conjunto: los socios transfieren su parte al club y el club paga al proveedor
+// (poleras, cortavientos, tricotas). No es cuota (no entra al FIFO) ni gasto propio del club.
+const CAT_COMPRA = 'Compra en conjunto';
+const esCompraConj = t => t.tipo === 'INGRESO' ? t.subcategoria === 'COMPRA_CONJUNTA'
+    : /^compra en conjunto/.test(unaccent(String(t.categoria || '')).toLowerCase());
+const RE_COMPRA_CONJ = /COMPRA (EN )?CONJUNT|TRICOTA|POLERA|CORTAVIENTO|CHAQUETA|INDUMENTARIA|ROPA|CALZA/;
 const TIPOS_NOV = [{t:'Congelado',f:0},{t:'Beca 50%',f:0.5},{t:'Beca 100%',f:0}];
 // Alias heredados del dashboard (se cargan a la tabla alias_socio al importar socios)
 const LEGACY_ALIASES = {
@@ -144,7 +150,8 @@ const normTel = t => { let d = String(t || '').replace(/\D/g, ''); if (d.length 
 
 function classCat(cat, desc) {
     const u = unaccent(cat).toUpperCase(), d = unaccent(desc).toUpperCase();
-    const otros = /TRICOTA|INDUMENTARIA|LICENCIA|ROPA|CALZA|INSCRIPCION|SEGURO|EVENTO/;
+    if (RE_COMPRA_CONJ.test(u) || RE_COMPRA_CONJ.test(d)) return 'COMPRA_CONJUNTA';
+    const otros = /LICENCIA|INSCRIPCION|SEGURO|EVENTO/;
     if (otros.test(d) || otros.test(u)) return 'OTROS';
     if (/CUOTA|MENSUALIDAD/.test(u)) return 'CUOTA';
     if (/ARRIENDO|VELO|PISTA/.test(u)) return 'ARRIENDO';
@@ -163,7 +170,8 @@ function clasificar(tx, socioId) {
         return { subcategoria: sc, conciliado: sc !== 'CUOTA' || !!socioId };
     }
     const d = unaccent(tx.descripcion);
-    if (/tricota|indumentaria|licencia|inscripcion|seguro|evento|calza/.test(d)) return { subcategoria:'OTROS', conciliado:false };
+    if (RE_COMPRA_CONJ.test(d.toUpperCase())) return { subcategoria:'COMPRA_CONJUNTA', conciliado:false };
+    if (/licencia|inscripcion|seguro|evento/.test(d)) return { subcategoria:'OTROS', conciliado:false };
     if (/arriendo/.test(d)) return { subcategoria:'ARRIENDO', conciliado:false };
     if (/donacion/.test(d)) return { subcategoria:'DONACION', conciliado:false };
     if (socioId) return { subcategoria:'CUOTA', conciliado: tx.monto % MULTIPLO_CUOTA === 0 };
@@ -637,6 +645,14 @@ async function setSubcat(txId, val) {
     await patchTx(txId, { subcategoria: val, auspiciador_id: null, conciliado: val !== 'CUOTA' || !!tx.socio_id });
 }
 async function confirmarTx(txId) { await patchTx(txId, { conciliado: true }); }
+// Categoría de un egreso (texto libre con sugerencias). 'Compra en conjunto' = pago a proveedor
+// financiado con aportes de socios.
+async function setCatEgreso(txId, val) {
+    const categoria = String(val || '').trim() || null;
+    const tx = state.txs.find(t => t.id === txId);
+    if (!tx || tx.tipo !== 'EGRESO' || (tx.categoria || null) === categoria) return;
+    if (await patchTx(txId, { categoria })) toast(`Egreso ${fmt(tx.monto)} → ${categoria || 'Sin categoría'}`);
+}
 
 async function rematchSinAsignar() {
     await withBusy('Re-ejecutando matching sobre ingresos sin socio...', async () => {
@@ -914,8 +930,11 @@ function viewCartola() {
 function viewConciliacion() {
     const cf = state.cf, q = unaccent(cf.q);
     const meses = [...new Set(state.txs.map(t => t.fecha.slice(0,7)))].sort().reverse();
+    const modoCompras = cf.estado === 'COMPRAS';
     let list = state.txs.filter(t => {
-        if (cf.tipo !== 'TODOS' && t.tipo !== cf.tipo) return false;
+        if (modoCompras) {
+            if (!esCompraConj(t)) return false;
+        } else if (cf.tipo !== 'TODOS' && t.tipo !== cf.tipo) return false;
         if (cf.mes !== 'TODOS' && !t.fecha.startsWith(cf.mes)) return false;
         if (cf.estado === 'REVISAR' && (t.conciliado || t.tipo === 'EGRESO')) return false;
         if (cf.estado === 'SIN' && (t.socio_id || t.tipo === 'EGRESO')) return false;
@@ -942,13 +961,28 @@ function viewConciliacion() {
             <td class="py-1.5 mono text-[10px] text-slate-500 whitespace-nowrap">${t.fecha}</td>
             <td class="py-1.5 truncate max-w-[340px]" title="${esc(t.descripcion)}">${esc(t.descripcion)}</td>
             <td class="py-1.5 text-right mono font-bold whitespace-nowrap ${isIng ? 'text-emerald-700' : 'text-rose-600'}">${isIng ? '' : '-'}${fmt(t.monto)}</td>
-            <td class="py-1.5 px-2">${isIng ? `<select class="inp !py-1 !text-[11px]" onchange="setSubcat(${t.id}, this.value)">${SUBCATS.map(c => `<option ${c === t.subcategoria ? 'selected' : ''}>${c}</option>`).join('')}</select>` : '<span class="text-[10px] text-slate-400 font-bold">EGRESO</span>'}</td>
-            <td class="py-1.5">${!isIng ? '' : t.subcategoria === 'AUSPICIO'
+            <td class="py-1.5 px-2">${isIng ? `<select class="inp !py-1 !text-[11px]" onchange="setSubcat(${t.id}, this.value)">${SUBCATS.map(c => `<option value="${c}" ${c === t.subcategoria ? 'selected' : ''}>${c.replace('_', ' ')}</option>`).join('')}</select>`
+                : `<input class="inp !py-1 !text-[11px] w-44 ${esCompraConj(t) ? 'border-violet-300 bg-violet-50' : ''}" list="catsEgreso" value="${esc(t.categoria || '')}" placeholder="Sin categoría" title="Categoría del egreso" onchange="setCatEgreso(${t.id}, this.value)">`}</td>
+            <td class="py-1.5">${!isIng ? (esCompraConj(t) ? '<span class="text-[10px] font-bold text-violet-700">pago a proveedor</span>' : '') : t.subcategoria === 'AUSPICIO'
                 ? `<select class="inp !py-1 !text-[11px] w-56 border-sky-300" onchange="setAuspiciador(${t.id}, this.value)">${auspOpts(t.auspiciador_id)}</select>`
                 : `<select class="inp !py-1 !text-[11px] w-56" onchange="setSocio(${t.id}, this.value)">${socioOpts(t.socio_id)}</select>`}</td>
             <td class="py-1.5 text-center">${badge}</td></tr>`;
     }).join('');
 
+    const catsEgr = [...new Set([CAT_COMPRA, ...state.txs.filter(t => t.tipo === 'EGRESO' && t.categoria && !String(t.categoria).startsWith('NO_EN_BANCO')).map(t => t.categoria.trim())])].sort((a, b) => a.localeCompare(b, 'es'));
+    const datalist = `<datalist id="catsEgreso">${catsEgr.map(c => `<option value="${esc(c)}"></option>`).join('')}</datalist>`;
+    let resumenCompras = '';
+    if (modoCompras) {
+        const rec = list.filter(t => t.tipo === 'INGRESO').reduce((a, t) => a + t.monto, 0);
+        const pag = list.filter(t => t.tipo === 'EGRESO').reduce((a, t) => a + t.monto, 0);
+        const saldo = rec - pag;
+        resumenCompras = `<div class="grid grid-cols-3 gap-2 mb-3">
+          <div class="rounded-lg p-3 bg-emerald-50"><p class="text-[9px] uppercase font-bold text-emerald-700">Aportes de socios</p><p class="text-lg font-extrabold text-emerald-700">${fmt(rec)}</p></div>
+          <div class="rounded-lg p-3 bg-violet-50"><p class="text-[9px] uppercase font-bold text-violet-700">Pagado a proveedores</p><p class="text-lg font-extrabold text-violet-700">${fmt(pag)}</p></div>
+          <div class="rounded-lg p-3 ${saldo >= 0 ? 'bg-sky-50' : 'bg-rose-50'}"><p class="text-[9px] uppercase font-bold ${saldo >= 0 ? 'text-sky-700' : 'text-rose-600'}">${saldo >= 0 ? 'Recaudado sin pagar aún' : 'El club puso de su caja'}</p><p class="text-lg font-extrabold ${saldo >= 0 ? 'text-sky-700' : 'text-rose-600'}">${fmt(Math.abs(saldo))}</p></div>
+        </div>
+        <p class="text-[11px] text-slate-500 mb-3">Ingresos en categoría <b>COMPRA CONJUNTA</b> + egresos con categoría <b>${CAT_COMPRA}</b>. No cuentan como cuota ni afectan la deuda de los socios.</p>`;
+    }
     const sel = (k, opts) => `<select class="inp" onchange="setCf('${k}', this.value)">${opts.map(([v,l]) => `<option value="${v}" ${cf[k] === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
     return `<div class="card p-4">
       <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
@@ -957,12 +991,13 @@ function viewConciliacion() {
         <button class="btn btn-p" onclick="rematchSinAsignar()">Re-ejecutar matching sobre ingresos sin socio</button>
       </div>
       <div class="flex flex-wrap gap-2 mb-3">
-        ${sel('estado', [['REVISAR','Por revisar'],['SIN','Ingresos sin socio'],['SIN_CUOTA','Cuotas sin socio'],['AUTO','Asignación automática'],['MANUAL','Asignación manual'],['TODOS','Todos']])}
+        ${sel('estado', [['REVISAR','Por revisar'],['SIN','Ingresos sin socio'],['SIN_CUOTA','Cuotas sin socio'],['AUTO','Asignación automática'],['MANUAL','Asignación manual'],['COMPRAS','Compras en conjunto'],['TODOS','Todos']])}
         ${sel('tipo', [['INGRESO','Ingresos'],['EGRESO','Egresos'],['TODOS','Ingresos y egresos']])}
         ${sel('mes', [['TODOS','Todos los meses'], ...meses.map(m => [m, m])])}
         <input class="inp w-56" placeholder="Buscar glosa o socio..." value="${esc(cf.q)}" onchange="setCf('q', this.value)">
-        <span class="text-[11px] text-slate-500 self-center ml-auto">${list.length} movimientos · ${fmt(total)}</span>
+        <span class="text-[11px] text-slate-500 self-center ml-auto">${list.length} movimientos${modoCompras ? '' : ` · ${fmt(total)}`}</span>
       </div>
+      ${resumenCompras}${datalist}
       <div class="scr overflow-x-auto"><table class="w-full text-xs min-w-[900px]">
         <thead class="text-[10px] uppercase text-slate-400 border-b"><tr><th class="py-1 text-left">Fecha</th><th class="text-left">Descripción</th><th class="text-right">Monto</th><th class="text-left px-2">Categoría</th><th class="text-left">Socio</th><th>Estado</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="6" class="p-4 text-center text-slate-400">Sin movimientos para estos filtros.</td></tr>'}</tbody></table></div>
@@ -1753,7 +1788,7 @@ function render() {
 // MODO CONSULTA (rol directiva). La protección real es RLS (v5);
 // esto solo oculta los controles que escribirían.
 // ============================================================
-const ACCIONES_ESCRITURA = /abrirModal|enviarRecordatorio|import\w+Sheet|importSheetTxs|delRow|rematchSinAsignar|recalcularAperturas|eliminarModal|guardarModal|confirmarTx|commitPreview|aprobarAperturas|editSocio|saveSocio|addNovedad|addAlias|setSocio|setSubcat|setAuspiciador|setSaldoApertura|onFileSelected|regenerarLink|abrirEnvioMasivo|envioWhatsApp/;
+const ACCIONES_ESCRITURA = /abrirModal|enviarRecordatorio|import\w+Sheet|importSheetTxs|delRow|rematchSinAsignar|recalcularAperturas|eliminarModal|guardarModal|confirmarTx|commitPreview|aprobarAperturas|editSocio|saveSocio|addNovedad|addAlias|setSocio|setSubcat|setCatEgreso|setAuspiciador|setSaldoApertura|onFileSelected|regenerarLink|abrirEnvioMasivo|envioWhatsApp/;
 function soloLectura() { return state.me?.rol !== 'admin'; }
 function aplicarSoloLectura(root) {
     root.querySelectorAll('[onclick],[onchange],[onsubmit]').forEach(el => {
