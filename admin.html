@@ -198,13 +198,14 @@ async function fetchAll(table, select='*', order='id') {
     return out;
 }
 async function loadAll() {
-    const [socios, aliases, novs, txs, aperturas, metas, auspiciadores, recordatorios] = await Promise.all([
+    const [socios, aliases, novs, txs, aperturas, metas, auspiciadores, recordatorios, visitas] = await Promise.all([
         fetchAll('socios'), fetchAll('alias_socio'), fetchAll('novedades'), fetchAll('transacciones_banco'),
         fetchAll('saldos_apertura', '*', 'socio_id'), fetchAll('metas'), fetchAll('auspiciadores'), fetchAll('recordatorios'),
+        fetchAll('visitas_estado', 'socio_id,dispositivo,created_at').catch(() => []),
     ]);
     const { data: cartolas } = await sb.from('cartolas').select('*').order('created_at', { ascending:false }).limit(1000);
     const { data: config } = await sb.from('config_club').select('*').eq('id', 1).maybeSingle();
-    Object.assign(state, { socios, aliases, novs, txs, aperturas, metas, auspiciadores, recordatorios, config, cartolas: cartolas || [] });
+    Object.assign(state, { socios, aliases, novs, txs, aperturas, metas, auspiciadores, recordatorios, visitas, config, cartolas: cartolas || [] });
 }
 
 // ============================================================
@@ -1007,7 +1008,8 @@ function viewEstado() {
               return `<td class="p-0.5"><div class="h-7 rounded-md flex items-center justify-center text-[10px] font-bold ${cls}" title="${tt}">${m.lb}</div></td>`; }).join('')}
           <td class="p-2 text-center bg-slate-50 border-l mono font-bold text-rose-600">${s.impagos || '<span class="text-slate-300">-</span>'}</td>
           <td class="p-2 text-right bg-slate-50"><div class="mono font-bold text-rose-600">${fmt(s.deuda)}</div>
-            ${!s.susp && s.deuda > 0 ? (() => { const u = ultimoRecordatorio(s.id); return `<button class="mt-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onclick="abrirModal('recordar', ${s.id})">📣 Recordar</button>${u ? `<div class="text-[9px] text-slate-400 font-sans">avisado ${fechaCorta(u.created_at)}</div>` : ''}`; })() : ''}</td></tr>`).join('')}
+            ${!s.susp && s.deuda > 0 ? (() => { const u = ultimoRecordatorio(s.id); return `<button class="mt-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onclick="abrirModal('recordar', ${s.id})">📣 Recordar</button>${u ? `<div class="text-[9px] text-slate-400 font-sans">avisado ${fechaCorta(u.created_at)}</div>` : ''}`; })() : ''}
+            ${!s.susp ? marcaVisita(s) : ''}</td></tr>`).join('')}
         </tbody></table></div></div>`;
 
     const years = [...new Set([2026, new Date().getFullYear()])];
@@ -1017,8 +1019,11 @@ function viewEstado() {
         <select class="inp" onchange="setState({yf:this.value})">${years.map(v => `<option ${String(v) === state.yf ? 'selected' : ''}>${v}</option>`).join('')}</select>
         <select class="inp" onchange="setState({sf:this.value})">${[['ACTIVO','Socios activos'],['SUSP','Ex socios (solo consulta)'],['TODOS','Todos']].map(([v,l]) => `<option value="${v}" ${state.sf === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <input class="inp w-56" placeholder="Buscar socio..." value="${esc(state.hq)}" onchange="setState({hq:this.value})">
+        <button class="btn btn-p" onclick="abrirEnvioMasivo()">📨 Enviar links a todos</button>
         <button class="btn btn-g" onclick="abrirModal('config')">⚙ Datos de transferencia y mensaje</button>
         <span class="text-[11px] text-slate-500 self-center">Deuda de ex socios (incobrable, <b>no se contabiliza</b>): ${fmt(deudaSusp)}</span>
+        ${(() => { const act = computeEstado().filter(x => !x.susp); const vis = act.filter(x => visitasDe(x.id)).length;
+            return `<span class="text-[11px] font-bold text-sky-700 bg-sky-50 rounded-full px-3 py-1 self-center" title="Socios activos que abrieron su link personal al menos una vez">👁 ${vis} de ${act.length} socios activos han revisado su estado</span>`; })()}
       </div>
       ${table(filt.filter(s => !s.susp), 'Socios activos', 'emerald')}
       ${filt.some(s => s.susp) ? table(filt.filter(s => s.susp), 'Ex socios: suspendidos / retirados · deuda incobrable, no se contabiliza', 'slate') : ''}`;
@@ -1436,6 +1441,7 @@ function viewModal() {
     let titulo, cuerpo, sinGuardar = false;
     if (md.tipo === 'recordar') { ({ titulo, cuerpo, sinGuardar } = modalRecordar(md, campo)); }
     else if (md.tipo === 'config') { ({ titulo, cuerpo } = modalConfigCobranza(campo)); }
+    else if (md.tipo === 'envio') { ({ titulo, cuerpo, sinGuardar } = modalEnvio(campo)); }
     else if (md.tipo === 'apertura') {
         const a = (state.aperturas || []).find(x => x.socio_id === md.id); const so = socioById(md.id);
         titulo = 'Ajustar saldo de apertura';
@@ -1491,7 +1497,7 @@ async function guardarModal(ev) {
     const f = new FormData(ev.target), v = k => (f.get(k) ?? '').toString().trim(), num = k => v(k) === '' ? null : parseInt(v(k));
     const md = state.modal; let tabla, rec;
     if (md.tipo === 'config') {
-        const keys = ['banco', 'tipo_cuenta', 'numero_cuenta', 'titular', 'rut_titular', 'email_comprobante', 'plantilla_mensaje'];
+        const keys = ['banco', 'tipo_cuenta', 'numero_cuenta', 'titular', 'rut_titular', 'email_comprobante', 'plantilla_mensaje', 'plantilla_aviso'];
         const upd = Object.fromEntries(keys.map(k => [k, (f.get(k) ?? '').toString()])); upd.updated_at = new Date().toISOString();
         return withBusy('Guardando...', async () => {
             const { error } = await sb.from('config_club').update(upd).eq('id', 1); if (error) throw error;
@@ -1576,6 +1582,19 @@ async function regenerarLink(id) {
     s.token_estado = token; toast('Link nuevo generado. Envíaselo al socio.'); render();
 }
 const ultimoRecordatorio = id => (state.recordatorios || []).filter(r => r.socio_id === id).sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+// Visitas al link personal (estado.html): cuántas veces y cuándo fue la última
+function visitasDe(id) {
+    const v = (state.visitas || []).filter(x => x.socio_id === id);
+    if (!v.length) return null;
+    const ult = v.reduce((a, b) => (b.created_at > a.created_at ? b : a));
+    return { n: v.length, ultima: ult.created_at, dispositivo: ult.dispositivo };
+}
+function marcaVisita(s) {
+    const v = visitasDe(s.id);
+    return v
+        ? `<div class="text-[9px] font-sans text-sky-700" title="Abrió su link ${v.n} ${v.n === 1 ? 'vez' : 'veces'} · última desde ${v.dispositivo === 'MOVIL' ? 'celular' : v.dispositivo === 'COMPUTADOR' ? 'computador' : '—'}">👁 visto ${fechaCorta(v.ultima)}${v.n > 1 ? ` (${v.n})` : ''}</div>`
+        : `<div class="text-[9px] font-sans text-slate-300">sin visitas</div>`;
+}
 const fechaCorta = iso => new Date(iso).toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' });
 async function enviarRecordatorio(canal) {
     const s = computeEstado().find(x => x.id === state.modal.id);
@@ -1605,7 +1624,7 @@ function modalRecordar(md, campo) {
       <div class="flex flex-wrap items-center gap-2 mb-2 text-[11px]"><span class="font-bold text-slate-500">Link personal:</span>
         <input readonly class="inp flex-1 min-w-[160px] !text-[10px] mono" value="${esc(linkEstado(s))}" onclick="this.select()">
         <button type="button" class="btn btn-g !py-1" onclick="copiarLink(${s.id})">Copiar</button>
-        <a class="btn btn-g !py-1" href="${esc(linkEstado(s))}" target="_blank" rel="noopener">Ver ↗</a>
+        <a class="btn btn-g !py-1" href="${esc(linkEstado(s))}&prev=1" target="_blank" rel="noopener" title="Vista previa: no se registra como visita del socio">Ver ↗</a>
         <button type="button" class="text-[10px] font-bold text-rose-600 hover:underline" onclick="regenerarLink(${s.id})">Regenerar</button></div>
       ${campo('Mensaje (puedes editarlo antes de enviar)', `<textarea id="msgCobranza" rows="13" class="inp w-full mt-1 !text-[12px] leading-snug">${esc(mensajeCobranza(s))}</textarea>`)}
       <div class="grid grid-cols-3 gap-2 mt-3">
@@ -1620,7 +1639,72 @@ function modalConfigCobranza(campo) {
     return { titulo: 'Datos de transferencia y mensaje', cuerpo: `<div class="grid grid-cols-2 gap-3">
         ${f('banco', 'Banco')}${f('tipo_cuenta', 'Tipo de cuenta')}${f('numero_cuenta', 'N° de cuenta')}${f('titular', 'Titular')}${f('rut_titular', 'RUT titular')}${f('email_comprobante', 'Email para comprobantes')}
         <div class="col-span-2">${campo('Plantilla del mensaje', `<textarea name="plantilla_mensaje" rows="12" class="inp w-full mt-1 !text-[12px] leading-snug">${esc(c.plantilla_mensaje || '')}</textarea>`)}
-        <p class="text-[10px] text-slate-500 mt-1">Variables: {nombre} {nombre_completo} {meses} {detalle} {deuda} {cuota} {datos_transferencia} {email} {link_estado}</p></div></div>` };
+        <p class="text-[10px] text-slate-500 mt-1">Variables: {nombre} {nombre_completo} {meses} {detalle} {deuda} {cuota} {datos_transferencia} {email} {link_estado}</p></div>
+        <div class="col-span-2">${campo('Mensaje de aviso para socios al día (sin cobro)', `<textarea name="plantilla_aviso" rows="9" class="inp w-full mt-1 !text-[12px] leading-snug">${esc(c.plantilla_aviso || AVISO_DEFAULT)}</textarea>`)}
+        <p class="text-[10px] text-slate-500 mt-1">Variables: {nombre} {nombre_completo} {email} {link_estado}</p></div></div>` };
+}
+
+// ============================================================
+// ENVÍO DE LINKS A TODOS: una fila de socios activos con teléfono.
+// Por cada uno abre WhatsApp con su mensaje (cobranza si debe, aviso si
+// está al día) y lo registra. Tú presionas "enviar" en WhatsApp.
+// ============================================================
+const AVISO_DEFAULT = `Hola {nombre} 👋, te escribimos de la Tesorería del Club Ciclista Santiago Pista.
+
+Desde ahora puedes revisar en línea tus cuotas 2026 y en qué usa el club la plata que aportamos entre todos:
+{link_estado}
+
+Este link es personal, no lo compartas. Si ves algo que no cuadra, escríbenos a {email}.
+
+¡Gracias por ser parte del club! 🚴`;
+function mensajeAviso(s) {
+    const c = state.config || {};
+    return (c.plantilla_aviso || AVISO_DEFAULT)
+        .replaceAll('{nombre}', String(s.nombre || '').trim().split(/\s+/)[0])
+        .replaceAll('{nombre_completo}', s.nombre || '')
+        .replaceAll('{email}', c.email_comprobante || '')
+        .replaceAll('{link_estado}', linkEstado(s));
+}
+const mensajeEnvio = s => (s.deuda > 0 ? mensajeCobranza(s) : mensajeAviso(s));
+function armarColaEnvio(omitirRecientes) {
+    const hace7 = new Date(Date.now() - 7 * 864e5).toISOString();
+    const act = computeEstado().filter(s => !s.susp);
+    const conTel = act.filter(s => s.telefono);
+    const cola = conTel.filter(s => !omitirRecientes || !(state.recordatorios || []).some(r => r.socio_id === s.id && r.created_at >= hace7))
+        .sort((a, b) => (b.deuda > 0) - (a.deuda > 0) || a.nombre.localeCompare(b.nombre)).map(s => s.id);
+    return { cola, i: 0, enviados: 0, saltados: 0, sinTel: act.length - conTel.length, omitidos: conTel.length - cola.length, omitirRecientes };
+}
+function abrirEnvioMasivo() { state.envio = armarColaEnvio(true); abrirModal('envio'); }
+function envioToggleRecientes() { state.envio = armarColaEnvio(!state.envio.omitirRecientes); render(); }
+function envioSaltar() { state.envio.i++; state.envio.saltados++; render(); }
+function envioWhatsApp() {
+    const e = state.envio, s = computeEstado().find(x => x.id === e.cola[e.i]); if (!s) return;
+    const txt = document.getElementById('msgEnvio')?.value || mensajeEnvio(s);
+    // Abrir primero (dentro del clic) para que el navegador no bloquee la ventana
+    window.open(`https://wa.me/${s.telefono}?text=${encodeURIComponent(txt)}`, '_blank');
+    e.i++; e.enviados++; render();
+    sb.from('recordatorios').insert({ socio_id: s.id, canal: 'WHATSAPP', deuda: s.deuda, meses: s.impagos, mensaje: txt, enviado_por: state.me?.id || null })
+        .select().single().then(({ data, error }) => { if (error) toast('WhatsApp abierto, pero no se registró: ' + error.message, 'warn'); else { state.recordatorios.push(data); render(); } });
+}
+function modalEnvio(campo) {
+    const e = state.envio, total = e.cola.length;
+    const pie = `<p class="text-[10px] text-slate-500 mt-3">${e.sinTel ? `${e.sinTel} socio${e.sinTel === 1 ? '' : 's'} activo${e.sinTel === 1 ? '' : 's'} sin teléfono no ${e.sinTel === 1 ? 'está incluido' : 'están incluidos'} (agrégalos en Socios). ` : ''}
+        <label class="inline-flex items-center gap-1 cursor-pointer"><input type="checkbox" ${e.omitirRecientes ? 'checked' : ''} onchange="envioToggleRecientes()"> omitir avisados en los últimos 7 días${e.omitidos ? ` (${e.omitidos})` : ''}</label></p>`;
+    if (e.i >= total) return { titulo: 'Enviar links a todos', sinGuardar: true, cuerpo: `
+        <div class="text-center py-6"><p class="text-3xl">✅</p><p class="font-extrabold text-slate-800 mt-2">Listo</p>
+        <p class="text-sm text-slate-600 mt-1">${e.enviados} mensaje${e.enviados === 1 ? '' : 's'} abierto${e.enviados === 1 ? '' : 's'} en WhatsApp${e.saltados ? ` · ${e.saltados} saltado${e.saltados === 1 ? '' : 's'}` : ''}.</p>
+        <p class="text-[11px] text-slate-500 mt-2">En "Estado de cuotas" cada uno queda con "avisado" y, cuando abra su link, con "👁 visto".</p></div>${pie}` };
+    const s = computeEstado().find(x => x.id === e.cola[e.i]);
+    return { titulo: `Enviar links a todos · ${e.i + 1} de ${total}`, sinGuardar: true, cuerpo: `
+      <div class="h-1.5 bg-slate-100 rounded-full mb-3"><div class="h-full rounded-full bg-emerald-500" style="width:${(e.i / total * 100).toFixed(0)}%"></div></div>
+      <div class="flex flex-wrap justify-between gap-2 mb-2"><div><p class="text-sm font-bold text-slate-800">${esc(s.nombre)}</p>
+        <p class="text-[11px] ${s.deuda > 0 ? 'text-rose-600' : 'text-emerald-700'} font-bold">${s.deuda > 0 ? `Debe ${s.impagos} cuota(s) · ${fmt(s.deuda)} → mensaje de cobranza` : 'Al día → mensaje de aviso'}</p></div>
+        <div class="text-[10px] text-slate-500 text-right">📱 +${esc(s.telefono)}</div></div>
+      ${campo('Mensaje (puedes editarlo antes de abrir WhatsApp)', `<textarea id="msgEnvio" rows="12" class="inp w-full mt-1 !text-[12px] leading-snug">${esc(mensajeEnvio(s))}</textarea>`)}
+      <div class="grid grid-cols-3 gap-2 mt-3">
+        <button type="button" class="btn text-white col-span-2" style="background:#22c55e" onclick="envioWhatsApp()">Abrir WhatsApp y pasar al siguiente →</button>
+        <button type="button" class="btn btn-g" onclick="envioSaltar()">Saltar</button></div>
+      <p class="text-[10px] text-slate-400 mt-2">Se abre WhatsApp con el mensaje listo: presiona enviar ahí y vuelve a esta pestaña.</p>${pie}` };
 }
 
 function render() {
@@ -1669,7 +1753,7 @@ function render() {
 // MODO CONSULTA (rol directiva). La protección real es RLS (v5);
 // esto solo oculta los controles que escribirían.
 // ============================================================
-const ACCIONES_ESCRITURA = /abrirModal|enviarRecordatorio|import\w+Sheet|importSheetTxs|delRow|rematchSinAsignar|recalcularAperturas|eliminarModal|guardarModal|confirmarTx|commitPreview|aprobarAperturas|editSocio|saveSocio|addNovedad|addAlias|setSocio|setSubcat|setAuspiciador|setSaldoApertura|onFileSelected|regenerarLink/;
+const ACCIONES_ESCRITURA = /abrirModal|enviarRecordatorio|import\w+Sheet|importSheetTxs|delRow|rematchSinAsignar|recalcularAperturas|eliminarModal|guardarModal|confirmarTx|commitPreview|aprobarAperturas|editSocio|saveSocio|addNovedad|addAlias|setSocio|setSubcat|setAuspiciador|setSaldoApertura|onFileSelected|regenerarLink|abrirEnvioMasivo|envioWhatsApp/;
 function soloLectura() { return state.me?.rol !== 'admin'; }
 function aplicarSoloLectura(root) {
     root.querySelectorAll('[onclick],[onchange],[onsubmit]').forEach(el => {
@@ -1682,7 +1766,7 @@ function aplicarSoloLectura(root) {
 // Bloqueo adicional en JS: si alguien llama una acción desde la consola
 ['enviarRecordatorio','importSheetTxs','importSociosSheet','importNovedadesSheet','delRow','rematchSinAsignar','recalcularAperturas',
  'eliminarModal','guardarModal','confirmarTx','commitPreview','aprobarAperturas','saveSocio','addNovedad','addAlias',
- 'setSocio','setSubcat','setAuspiciador','setSaldoApertura','regenerarLink'].forEach(n => {
+ 'setSocio','setSubcat','setAuspiciador','setSaldoApertura','regenerarLink','abrirEnvioMasivo','envioWhatsApp'].forEach(n => {
     const f = window[n]; if (typeof f !== 'function') return;
     window[n] = function (...a) { if (soloLectura()) { toast('Modo consulta: solo tesorería puede modificar datos.', 'warn'); a[0]?.preventDefault?.(); return; } return f.apply(this, a); };
 });
