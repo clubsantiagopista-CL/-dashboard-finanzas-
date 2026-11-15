@@ -180,6 +180,11 @@ async function cargar() {
     ]);
     if (r1.error) state.error = r1.error.message; else if (!r1.data) state.error = 'link'; else state.data = r1.data;
     if (!r2.error) state.club = r2.data;
+    // Registra la visita (fecha y si es celular o computador). Las vistas previas del panel (&prev=1) no cuentan.
+    if (state.data && !new URLSearchParams(location.search).has('prev')) {
+        const movil = /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+        sb.rpc('registrar_visita', { p_token: token, p_dispositivo: movil ? 'MOVIL' : 'COMPUTADOR' }).then(() => {}, () => {});
+    }
     render();
 }
 
@@ -275,7 +280,7 @@ function render() {
       </section>` : ''}
 
       <p class="text-[11px] text-slate-500 text-center px-4">¿Ves algo que no cuadra? Envía tu comprobante a <b>${esc(t.email)}</b> y lo revisamos.</p>
-      <p class="text-[10px] text-slate-400 text-center">Este link es personal: no lo compartas. Actualizado ${new Date(d.actualizado).toLocaleString('es-CL')}</p>
+      <p class="text-[10px] text-slate-400 text-center">Este link es personal: no lo compartas. Actualizado ${new Date(d.actualizado).toLocaleString('es-CL')}.<br>Tesorería registra la fecha en que abres esta página, para saber si te llegó la información.</p>
     </main>`;
 }
 window.addEventListener('hashchange', () => { state.data = null; state.error = ''; cargar(); });
