@@ -145,8 +145,15 @@ function toISO(v) {
 
 const normRut = r => { const c = String(r || '').replace(/[^0-9kK]/g,'').toUpperCase(); return c.length < 2 ? '' : `${c.slice(0,-1)}-${c.slice(-1)}`; };
 const isSalida = estado => RE_SALIDA.test(estado || '');
-// Teléfono chileno a formato WhatsApp 569XXXXXXXX
-const normTel = t => { let d = String(t || '').replace(/\D/g, ''); if (d.length === 9 && d[0] === '9') d = '56' + d; return /^569\d{8}$/.test(d) ? d : null; };
+// Teléfono a formato WhatsApp (solo dígitos con código de país): chileno 569XXXXXXXX
+// o extranjero con su código (+46…, +33…). Celular chileno de 9 dígitos sin código → se antepone 56.
+const normTel = t => {
+    let d = String(t || '').replace(/\D/g, '').replace(/^00/, '');
+    if (d.length === 9 && d[0] === '9') d = '56' + d;
+    if (/^569\d{8}$/.test(d)) return d;
+    if (/^(?!56)[1-9]\d{9,14}$/.test(d)) return d;   // internacional
+    return null;
+};
 
 function classCat(cat, desc) {
     const u = unaccent(cat).toUpperCase(), d = unaccent(desc).toUpperCase();
@@ -1232,7 +1239,7 @@ async function aprobarAperturas() {
 function viewSocios() {
     const e = state.editSocio, s = e && e !== 'new' ? socioById(e) : {};
     const form = e ? `<form onsubmit="saveSocio(event)" class="card p-4 mb-4 grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
-        ${[['rut','RUT',s.rut],['nombre','Nombre',s.nombre],['email','Email',s.email],['telefono','Teléfono (569…)',s.telefono],['tipo_socio','Tipo',s.tipo_socio]].map(([k,l,v]) =>
+        ${[['rut','RUT',s.rut],['nombre','Nombre',s.nombre],['email','Email',s.email],['telefono','Teléfono (+56 9… o +código país)',s.telefono],['tipo_socio','Tipo',s.tipo_socio]].map(([k,l,v]) =>
           `<label class="text-[10px] font-bold text-slate-500">${l}<input name="${k}" class="inp w-full mt-1" value="${esc(v || '')}"></label>`).join('')}
         <label class="text-[10px] font-bold text-slate-500">Estado<select name="estado" class="inp w-full mt-1">${ESTADOS.map(x => `<option ${x === (s.estado || 'ACTIVO') ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
         <label class="text-[10px] font-bold text-slate-500">Cuota<input name="cuota_mensual" type="number" class="inp w-full mt-1" value="${s.cuota_mensual ?? CUOTA_BASE}"></label>
